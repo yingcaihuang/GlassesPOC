@@ -1,0 +1,77 @@
+name: Deploy to Azure VM (Docker)
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+env:
+  AZURE_RESOURCE_GROUP: your-resource-group
+  VM_IP: your-vm-ip-address
+  VM_USER: azureuser
+  DEPLOY_PATH: /home/azureuser/app
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Azure Login with OIDC
+      uses: azure/login@v2
+      with:
+        client-id: ${{ secrets.AZURE_CLIENT_ID }}
+        tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+        subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+    - name: Setup SSH
+      run: |
+        mkdir -p ~/.ssh
+        echo "${{ secrets.AZURE_VM_SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+        chmod 600 ~/.ssh/id_rsa
+        ssh-keyscan -H ${{ env.VM_IP }} >> ~/.ssh/known_hosts
+
+    - name: Build and Push Docker Image (Optional)
+      # 如果你使用 Azure Container Registry，可以在这里构建和推送镜像
+      # run: |
+      #   az acr login --name your-registry-name
+      #   docker build -t your-registry-name.azurecr.io/your-app:latest .
+      #   docker push your-registry-name.azurecr.io/your-app:latest
+
+    - name: Deploy to VM
+      run: |
+        # 同步文件到 VM
+        rsync -avz --delete \
+          --exclude '.git' \
+          --exclude '.github' \
+          --exclude 'node_modules' \
+          ./ ${{ env.VM_USER }}@${{ env.VM_IP }}:${{ env.DEPLOY_PATH }}/
+        
+        # 在 VM 上执行部署
+        ssh ${{ env.VM_USER }}@${{ env.VM_IP }} << 'EOF'
+          cd ${{ env.DEPLOY_PATH }}
+          
+          # 停止旧容器
+          docker-compose down || true
+          
+          # 构建并启动新容器
+          docker-compose up -d --build
+          
+          # 清理未使用的镜像
+          docker image prune -f
+          
+          echo "Docker 部署完成！"
+        EOF
+
+    - name: Cleanup
+      if: always()
+      run: |
+        rm -f ~/.ssh/id_rsa
+

@@ -1,0 +1,92 @@
+name: Deploy to Azure VM
+
+on:
+  push:
+    branches:
+      - main  # 可以根据需要修改分支名
+  workflow_dispatch:  # 允许手动触发
+
+env:
+  AZURE_WEBAPP_NAME: your-vm-name  # 替换为你的 VM 名称
+  AZURE_RESOURCE_GROUP: your-resource-group  # 替换为你的资源组名称
+  VM_IP: your-vm-ip-address  # 替换为你的 VM IP 地址
+  VM_USER: azureuser  # 替换为你的 VM 用户名
+  DEPLOY_PATH: /home/azureuser/app  # 部署路径，根据实际情况修改
+
+permissions:
+  id-token: write  # OIDC 认证需要
+  contents: read   # 读取仓库内容
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Azure Login with OIDC
+      uses: azure/login@v2
+      with:
+        client-id: ${{ secrets.AZURE_CLIENT_ID }}
+        tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+        subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+    - name: Setup SSH
+      run: |
+        mkdir -p ~/.ssh
+        echo "${{ secrets.AZURE_VM_SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+        chmod 600 ~/.ssh/id_rsa
+        ssh-keyscan -H ${{ env.VM_IP }} >> ~/.ssh/known_hosts
+
+    - name: Deploy to VM
+      run: |
+        ssh ${{ env.VM_USER }}@${{ env.VM_IP }} << 'EOF'
+          # 创建部署目录（如果不存在）
+          mkdir -p ${{ env.DEPLOY_PATH }}
+          
+          # 进入部署目录
+          cd ${{ env.DEPLOY_PATH }}
+          
+          # 备份当前版本（可选）
+          if [ -d "current" ]; then
+            mv current "backup-$(date +%Y%m%d-%H%M%S)"
+          fi
+          
+          # 创建新的部署目录
+          mkdir -p current
+        EOF
+        
+        # 使用 rsync 同步文件到 VM
+        rsync -avz --delete \
+          --exclude '.git' \
+          --exclude '.github' \
+          --exclude 'node_modules' \
+          --exclude '.env' \
+          ./ ${{ env.VM_USER }}@${{ env.VM_IP }}:${{ env.DEPLOY_PATH }}/current/
+        
+        # 在 VM 上执行部署后脚本
+        ssh ${{ env.VM_USER }}@${{ env.VM_IP }} << 'EOF'
+          cd ${{ env.DEPLOY_PATH }}/current
+          
+          # 根据你的项目类型，执行相应的部署命令
+          # 例如：如果是 Node.js 项目
+          # npm install --production
+          # pm2 restart app
+          
+          # 例如：如果是 Python 项目
+          # pip install -r requirements.txt
+          # systemctl restart your-app
+          
+          # 例如：如果是 Docker 项目
+          # docker-compose down
+          # docker-compose up -d --build
+          
+          echo "部署完成！"
+        EOF
+
+    - name: Cleanup
+      if: always()
+      run: |
+        rm -f ~/.ssh/id_rsa
+

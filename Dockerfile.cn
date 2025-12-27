@@ -1,0 +1,38 @@
+# 使用国内镜像源的Dockerfile（适用于网络受限环境）
+# 使用方法: docker build -f Dockerfile.cn -t smart-glasses-backend .
+
+# Build stage - 使用官方镜像（通过镜像加速器拉取）
+FROM golang:1.21-alpine AS builder
+
+WORKDIR /app
+
+# 设置Go代理（可选，如果需要）
+# ENV GOPROXY=https://goproxy.cn,direct
+
+# Copy go mod files
+COPY go.mod go.sum ./
+RUN go mod download
+
+# Copy source code
+COPY . .
+
+# Build the application
+RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o server ./cmd/server
+
+# Final stage - 使用官方镜像（通过镜像加速器拉取）
+FROM alpine:latest
+
+RUN apk --no-cache add ca-certificates tzdata
+WORKDIR /root/
+
+# Copy the binary from builder
+COPY --from=builder /app/server .
+COPY --from=builder /app/configs ./configs
+COPY --from=builder /app/migrations ./migrations
+
+# Expose port
+EXPOSE 8080
+
+# Run the application
+CMD ["./server"]
+

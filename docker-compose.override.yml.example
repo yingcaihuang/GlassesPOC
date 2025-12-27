@@ -1,0 +1,18 @@
+# 这是一个示例文件，展示如何覆盖docker-compose.yml的配置
+# 复制此文件为 docker-compose.override.yml 来自定义配置
+# docker-compose会自动加载override文件
+
+services:
+  app:
+    environment:
+      # 覆盖Azure OpenAI配置
+      AZURE_OPENAI_ENDPOINT: "https://your-custom-endpoint.openai.azure.com/"
+      AZURE_OPENAI_API_KEY: "your-custom-api-key"
+      AZURE_OPENAI_DEPLOYMENT_NAME: "gpt-35-turbo"
+    
+    # 如果需要挂载本地代码进行开发（支持热重载）
+    # volumes:
+    #   - .:/app
+    #   - /app/vendor
+    # command: go run cmd/server/main.go
+

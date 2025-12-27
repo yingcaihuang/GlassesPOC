@@ -1,0 +1,98 @@
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15-alpine
+    container_name: smart-glasses-postgres
+    environment:
+      POSTGRES_USER: smartglasses
+      POSTGRES_PASSWORD: smartglasses123
+      POSTGRES_DB: smart_glasses
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./migrations:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U smartglasses"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - smart-glasses-network
+
+  # Redis Cache
+  redis:
+    image: redis:7-alpine
+    container_name: smart-glasses-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - smart-glasses-network
+
+  # Backend Application
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: smart-glasses-app
+    environment:
+      # Server
+      SERVER_PORT: "8080"
+      SERVER_ENV: "development"
+      
+      # Database
+      POSTGRES_DSN: "postgres://smartglasses:smartglasses123@postgres:5432/smart_glasses?sslmode=disable"
+      REDIS_ADDR: "redis:6379"
+      REDIS_PASSWORD: ""
+      
+      # JWT
+      JWT_SECRET_KEY: "dev-secret-key-change-in-production"
+      JWT_ACCESS_TOKEN_EXPIRY: "1h"
+      JWT_REFRESH_TOKEN_EXPIRY: "168h"
+      
+      # Azure OpenAI (需要用户配置)
+      AZURE_OPENAI_ENDPOINT: "${AZURE_OPENAI_ENDPOINT:-}"
+      AZURE_OPENAI_API_KEY: "${AZURE_OPENAI_API_KEY:-}"
+      AZURE_OPENAI_DEPLOYMENT_NAME: "${AZURE_OPENAI_DEPLOYMENT_NAME:-gpt-4}"
+      AZURE_OPENAI_API_VERSION: "${AZURE_OPENAI_API_VERSION:-2024-02-15-preview}"
+    expose:
+      - "8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - smart-glasses-network
+    restart: unless-stopped
+
+  # Frontend Application
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: smart-glasses-frontend
+    ports:
+      - "3000:80"
+    depends_on:
+      - app
+    networks:
+      - smart-glasses-network
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  redis_data:
+
+networks:
+  smart-glasses-network:
+    driver: bridge
+
