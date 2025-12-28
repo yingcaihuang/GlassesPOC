@@ -5,6 +5,7 @@ import Dashboard from './pages/Dashboard'
 import Translation from './pages/Translation'
 import History from './pages/History'
 import Users from './pages/Users'
+import RealtimeChat from './pages/RealtimeChat'
 import Layout from './components/Layout'
 import ProtectedRoute from './components/ProtectedRoute'
 
@@ -27,6 +28,7 @@ function App() {
             <Route path="translation" element={<Translation />} />
             <Route path="history" element={<History />} />
             <Route path="users" element={<Users />} />
+            <Route path="realtime-chat" element={<RealtimeChat />} />
           </Route>
         </Routes>
       </Router>

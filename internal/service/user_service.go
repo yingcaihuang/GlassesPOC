@@ -27,4 +27,3 @@ func (s *UserService) GetProfile(userID uuid.UUID) (*model.UserInfo, error) {
 		Email:    user.Email,
 	}, nil
 }
-

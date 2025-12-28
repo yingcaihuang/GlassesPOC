@@ -13,6 +13,7 @@ type Config struct {
 	Database DatabaseConfig `yaml:"database"`
 	JWT      JWTConfig      `yaml:"jwt"`
 	Azure    AzureConfig    `yaml:"azure"`
+	Realtime RealtimeConfig `yaml:"realtime"`
 }
 
 type ServerConfig struct {
@@ -39,6 +40,13 @@ type AzureConfig struct {
 	APIVersion    string `yaml:"api_version"`
 }
 
+type RealtimeConfig struct {
+	Endpoint       string `yaml:"realtime_endpoint"`
+	APIKey         string `yaml:"realtime_api_key"`
+	DeploymentName string `yaml:"realtime_deployment_name"`
+	APIVersion     string `yaml:"realtime_api_version"`
+}
+
 func Load() (*Config, error) {
 	// Load .env file if exists
 	_ = godotenv.Load()
@@ -63,6 +71,12 @@ func Load() (*Config, error) {
 			APIKey:        getEnv("AZURE_OPENAI_API_KEY", ""),
 			DeploymentName: getEnv("AZURE_OPENAI_DEPLOYMENT_NAME", "gpt-4"),
 			APIVersion:    getEnv("AZURE_OPENAI_API_VERSION", "2024-02-15-preview"),
+		},
+		Realtime: RealtimeConfig{
+			Endpoint:       getEnv("AZURE_OPENAI_REALTIME_ENDPOINT", ""),
+			APIKey:         getEnv("AZURE_OPENAI_REALTIME_API_KEY", ""),
+			DeploymentName: getEnv("AZURE_OPENAI_REALTIME_DEPLOYMENT_NAME", "gpt-4o-realtime-preview"),
+			APIVersion:     getEnv("AZURE_OPENAI_REALTIME_API_VERSION", "2024-10-01-preview"),
 		},
 	}
 
@@ -126,6 +140,18 @@ func overrideWithEnv(cfg *Config) {
 	}
 	if version := os.Getenv("AZURE_OPENAI_API_VERSION"); version != "" {
 		cfg.Azure.APIVersion = version
+	}
+	if realtimeEndpoint := os.Getenv("AZURE_OPENAI_REALTIME_ENDPOINT"); realtimeEndpoint != "" {
+		cfg.Realtime.Endpoint = realtimeEndpoint
+	}
+	if realtimeKey := os.Getenv("AZURE_OPENAI_REALTIME_API_KEY"); realtimeKey != "" {
+		cfg.Realtime.APIKey = realtimeKey
+	}
+	if realtimeDeployment := os.Getenv("AZURE_OPENAI_REALTIME_DEPLOYMENT_NAME"); realtimeDeployment != "" {
+		cfg.Realtime.DeploymentName = realtimeDeployment
+	}
+	if realtimeVersion := os.Getenv("AZURE_OPENAI_REALTIME_API_VERSION"); realtimeVersion != "" {
+		cfg.Realtime.APIVersion = realtimeVersion
 	}
 }
 

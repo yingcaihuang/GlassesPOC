@@ -1,6 +1,6 @@
 import { Outlet, Link, useLocation } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
-import { LogOut, Menu, X, Home, Languages, History, Users } from 'lucide-react'
+import { LogOut, Menu, X, Home, Languages, History, Users, Mic } from 'lucide-react'
 import { useState } from 'react'
 
 export default function Layout() {
@@ -11,6 +11,7 @@ export default function Layout() {
   const navigation = [
     { name: '仪表盘', href: '/dashboard', icon: Home },
     { name: '翻译', href: '/translation', icon: Languages },
+    { name: '实时语音对话', href: '/realtime-chat', icon: Mic },
     { name: '翻译历史', href: '/history', icon: History },
     { name: '用户管理', href: '/users', icon: Users },
   ]

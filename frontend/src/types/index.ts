@@ -69,3 +69,40 @@ export interface StatisticsResponse {
   user_stats: UserStat[]
   token_usage: TokenUsage[]
 }
+
+// Realtime Chat Types
+export interface RealtimeMessage {
+  id: string
+  type: 'user' | 'assistant'
+  text: string
+  timestamp: Date
+  audioData?: string
+  duration?: number
+  metadata?: any
+}
+
+export interface WebSocketMessage {
+  type: string
+  audio?: string
+  text?: string
+  data?: any
+  error?: string
+  config?: any
+  format?: string
+  timestamp?: number
+}
+
+export interface AudioConfig {
+  sampleRate: number
+  channelCount: number
+  echoCancellation: boolean
+  noiseSuppression: boolean
+  autoGainControl: boolean
+}
+
+export interface ConnectionQuality {
+  level: 'good' | 'fair' | 'poor'
+  latency?: number
+  packetLoss?: number
+  timestamp: Date
+}

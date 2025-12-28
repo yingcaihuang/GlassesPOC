@@ -9,9 +9,9 @@ import (
 )
 
 type TranslateService struct {
-	azureClient    *azure.OpenAIClient
-	translateRepo  *repository.TranslateRepository
-	tokenRepo      *repository.TokenRepository
+	azureClient   *azure.OpenAIClient
+	translateRepo *repository.TranslateRepository
+	tokenRepo     *repository.TokenRepository
 }
 
 func NewTranslateService(azureClient *azure.OpenAIClient, translateRepo *repository.TranslateRepository, tokenRepo *repository.TokenRepository) *TranslateService {
@@ -69,12 +69,12 @@ func (s *TranslateService) GetHistory(userID uuid.UUID, limit, offset int) ([]*m
 	result := make([]*model.TranslationHistoryResponse, len(translations))
 	for i, t := range translations {
 		result[i] = &model.TranslationHistoryResponse{
-			ID:              t.ID,
-			SourceText:      t.SourceText,
-			TranslatedText:  t.TranslatedText,
-			SourceLanguage:  t.SourceLanguage,
-			TargetLanguage:  t.TargetLanguage,
-			CreatedAt:       t.CreatedAt,
+			ID:             t.ID,
+			SourceText:     t.SourceText,
+			TranslatedText: t.TranslatedText,
+			SourceLanguage: t.SourceLanguage,
+			TargetLanguage: t.TargetLanguage,
+			CreatedAt:      t.CreatedAt,
 		}
 	}
 
@@ -84,4 +84,3 @@ func (s *TranslateService) GetHistory(userID uuid.UUID, limit, offset int) ([]*m
 func (s *TranslateService) SaveTranslation(translation *model.Translation) error {
 	return s.translateRepo.Create(translation)
 }
-

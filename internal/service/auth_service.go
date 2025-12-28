@@ -14,18 +14,18 @@ import (
 )
 
 type AuthService struct {
-	userRepo          *repository.UserRepository
-	redisClient       *redis.Client
-	secretKey         string
-	accessTokenExpiry time.Duration
+	userRepo           *repository.UserRepository
+	redisClient        *redis.Client
+	secretKey          string
+	accessTokenExpiry  time.Duration
 	refreshTokenExpiry time.Duration
 }
 
 func NewAuthService(userRepo *repository.UserRepository, redisClient *redis.Client, secretKey string, accessTokenExpiry, refreshTokenExpiry time.Duration) *AuthService {
 	return &AuthService{
-		userRepo:          userRepo,
-		redisClient:     redisClient,
-		secretKey:       secretKey,
+		userRepo:           userRepo,
+		redisClient:        redisClient,
+		secretKey:          secretKey,
 		accessTokenExpiry:  accessTokenExpiry,
 		refreshTokenExpiry: refreshTokenExpiry,
 	}
@@ -207,4 +207,3 @@ func validatePassword(password string) error {
 
 	return nil
 }
-

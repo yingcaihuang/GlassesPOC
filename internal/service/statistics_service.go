@@ -23,7 +23,7 @@ func (s *StatisticsService) GetStatistics(userID uuid.UUID, isAdmin bool) (*mode
 	var languageStats []*model.LanguageStat
 	var userStats []*model.UserStat
 	var tokenUsage []*model.TokenUsage
-	
+
 	if isAdmin {
 		// Admin can see all stats
 		languageStats, _ = s.translateRepo.GetAllLanguageStats()
@@ -34,11 +34,10 @@ func (s *StatisticsService) GetStatistics(userID uuid.UUID, isAdmin bool) (*mode
 		languageStats, _ = s.translateRepo.GetLanguageStats(userID)
 		tokenUsage, _ = s.tokenRepo.GetTokenUsage(userID, 30) // Last 30 days
 	}
-	
+
 	return &model.StatisticsResponse{
 		LanguageStats: languageStats,
 		UserStats:     userStats,
 		TokenUsage:    tokenUsage,
 	}, nil
 }
-
