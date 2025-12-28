@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import { useAuth } from '../contexts/AuthContext'
 import { Mic, MicOff, Wifi, WifiOff, AlertCircle, Volume2, Activity } from 'lucide-react'
 import { RealtimeMessage, WebSocketMessage, AudioConfig } from '../types'
-import { errorHandler, ErrorType, handleMicrophonePermission, handleAudioPlayback } from '../utils/errorHandler'
+import { errorHandler, ErrorType, handleMicrophonePermission, handleAudioPlayback, cleanupAudioResources } from '../utils/errorHandler'
 
 const AUDIO_CONFIG: AudioConfig = {
   sampleRate: 24000,  // GPT Realtime API要求24kHz
@@ -664,6 +664,9 @@ export default function RealtimeChat() {
       if (reconnectTimeoutRef.current) {
         clearTimeout(reconnectTimeoutRef.current)
       }
+      
+      // Clean up audio resources
+      cleanupAudioResources()
       
       // Clean up error handlers
       errorHandler.offError(ErrorType.PERMISSION, handlePermissionError)

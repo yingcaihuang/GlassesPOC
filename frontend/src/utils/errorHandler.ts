@@ -1,6 +1,12 @@
 // Frontend error handling utility for GPT Realtime WebRTC
 // Requirements: 8.3 - 麦克风权限被拒绝时显示权限请求提示
 
+// 全局AudioContext用于音频播放，避免重复创建导致的卡顿
+let globalAudioContext: AudioContext | null = null
+// 音频播放队列管理
+let audioPlaybackQueue: Promise<void> = Promise.resolve()
+let currentAudioSource: AudioBufferSourceNode | null = null
+
 export interface ErrorInfo {
   type: ErrorType
   code: string
@@ -285,42 +291,133 @@ export const handleMicrophonePermission = async (): Promise<MediaStream> => {
 }
 
 export const handleAudioPlayback = async (audioData: string): Promise<void> => {
-  try {
-    // Decode base64 audio data
-    const binaryData = atob(audioData)
-    const arrayBuffer = new ArrayBuffer(binaryData.length)
-    const uint8Array = new Uint8Array(arrayBuffer)
-    
-    for (let i = 0; i < binaryData.length; i++) {
-      uint8Array[i] = binaryData.charCodeAt(i)
-    }
+  // 将音频播放加入队列，避免重叠播放
+  audioPlaybackQueue = audioPlaybackQueue.then(async () => {
+    try {
+      // 停止当前播放的音频（如果有）
+      if (currentAudioSource) {
+        currentAudioSource.stop()
+        currentAudioSource = null
+      }
+      
+      // Decode base64 audio data
+      const binaryData = atob(audioData)
+      const arrayBuffer = new ArrayBuffer(binaryData.length)
+      const uint8Array = new Uint8Array(arrayBuffer)
+      
+      for (let i = 0; i < binaryData.length; i++) {
+        uint8Array[i] = binaryData.charCodeAt(i)
+      }
 
-    // GPT returns PCM16 audio data - convert directly to AudioBuffer
-    const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)({
-      sampleRate: 24000 // GPT uses 24kHz
-    })
-    
-    // Convert PCM16 bytes to Float32 samples
-    const pcm16Data = new Int16Array(arrayBuffer)
-    const sampleCount = pcm16Data.length
-    const audioBuffer = audioContext.createBuffer(1, sampleCount, 24000) // mono, 24kHz
-    const channelData = audioBuffer.getChannelData(0)
-    
-    // Convert PCM16 to Float32 (-1 to 1 range)
-    for (let i = 0; i < sampleCount; i++) {
-      channelData[i] = pcm16Data[i] / 32768.0
+      // 使用全局AudioContext避免重复创建
+      if (!globalAudioContext) {
+        globalAudioContext = new (window.AudioContext || (window as any).webkitAudioContext)({
+          sampleRate: 24000 // GPT uses 24kHz
+        })
+      }
+      
+      // 确保AudioContext处于运行状态
+      if (globalAudioContext.state === 'suspended') {
+        await globalAudioContext.resume()
+      }
+      
+      // Convert PCM16 bytes to Float32 samples
+      const pcm16Data = new Int16Array(arrayBuffer)
+      const sampleCount = pcm16Data.length
+      
+      if (sampleCount === 0) {
+        console.warn('Empty audio data received, skipping playback')
+        return
+      }
+      
+      const audioBuffer = globalAudioContext.createBuffer(1, sampleCount, 24000) // mono, 24kHz
+      const channelData = audioBuffer.getChannelData(0)
+      
+      // Convert PCM16 to Float32 (-1 to 1 range) with better precision
+      for (let i = 0; i < sampleCount; i++) {
+        channelData[i] = Math.max(-1, Math.min(1, pcm16Data[i] / 32768.0))
+      }
+      
+      // 创建音频源并播放
+      const source = globalAudioContext.createBufferSource()
+      source.buffer = audioBuffer
+      currentAudioSource = source
+      
+      // 添加音量控制和低通滤波器减少噪音
+      const gainNode = globalAudioContext.createGain()
+      const filterNode = globalAudioContext.createBiquadFilter()
+      
+      gainNode.gain.value = 0.7 // 适中的音量
+      filterNode.type = 'lowpass'
+      filterNode.frequency.value = 8000 // 8kHz低通滤波，去除高频噪音
+      filterNode.Q.value = 1
+      
+      source.connect(filterNode)
+      filterNode.connect(gainNode)
+      gainNode.connect(globalAudioContext.destination)
+      
+      // 返回Promise以便等待播放完成
+      return new Promise<void>((resolve, reject) => {
+        source.onended = () => {
+          console.log(`✓ GPT audio playback completed: ${audioBuffer.duration.toFixed(2)}s`)
+          currentAudioSource = null
+          resolve()
+        }
+        
+        try {
+          source.start()
+          console.log(`🔊 Playing GPT audio: ${sampleCount} samples, ${audioBuffer.duration.toFixed(2)}s`)
+          
+          // 设置超时以防音频卡住
+          setTimeout(() => {
+            if (currentAudioSource === source) {
+              console.warn('Audio playback timeout, stopping source')
+              try {
+                source.stop()
+              } catch (e) {
+                console.warn('Error stopping timed out audio source:', e)
+              }
+              currentAudioSource = null
+              resolve()
+            }
+          }, audioBuffer.duration * 1000 + 1000) // 音频时长 + 1秒缓冲
+          
+        } catch (error) {
+          console.error('Failed to start audio source:', error)
+          currentAudioSource = null
+          reject(error)
+        }
+      })
+      
+    } catch (error) {
+      errorHandler.handleAudioPlaybackError(error as Error, `Failed to play PCM16 audio data of length ${audioData.length}`)
+      throw error
     }
-    
-    // Play the audio
-    const source = audioContext.createBufferSource()
-    source.buffer = audioBuffer
-    source.connect(audioContext.destination)
-    source.start()
-    
-    console.log(`Playing GPT audio: ${sampleCount} samples, ${audioBuffer.duration.toFixed(2)}s`)
-    
-  } catch (error) {
-    errorHandler.handleAudioPlaybackError(error as Error, `Failed to play PCM16 audio data of length ${audioData.length}`)
-    throw error
+  })
+  
+  return audioPlaybackQueue
+}
+
+// 清理音频资源
+export const cleanupAudioResources = (): void => {
+  if (currentAudioSource) {
+    try {
+      currentAudioSource.stop()
+    } catch (error) {
+      console.warn('Error stopping current audio source:', error)
+    }
+    currentAudioSource = null
   }
+  
+  if (globalAudioContext && globalAudioContext.state !== 'closed') {
+    try {
+      globalAudioContext.close()
+    } catch (error) {
+      console.warn('Error closing global audio context:', error)
+    }
+    globalAudioContext = null
+  }
+  
+  // 重置播放队列
+  audioPlaybackQueue = Promise.resolve()
 }
