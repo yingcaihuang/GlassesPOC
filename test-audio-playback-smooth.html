@@ -1,0 +1,371 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>音频播放流畅性测试</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            background: white;
+            padding: 20px;
+            border-radius: 10px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        button {
+            background: #007bff;
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 16px;
+            margin: 10px;
+        }
+        button:hover {
+            background: #0056b3;
+        }
+        button:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+        .status {
+            margin: 10px 0;
+            padding: 10px;
+            border-radius: 5px;
+            background: #e9ecef;
+        }
+        .log {
+            background: #f8f9fa;
+            border: 1px solid #dee2e6;
+            border-radius: 5px;
+            padding: 10px;
+            margin: 10px 0;
+            max-height: 300px;
+            overflow-y: auto;
+            font-family: monospace;
+            font-size: 12px;
+        }
+        .playing {
+            background: #28a745;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>音频播放流畅性测试</h1>
+        <p>测试优化后的音频播放功能，检查是否还有卡顿问题</p>
+        
+        <button id="testSingleBtn">测试单个音频播放</button>
+        <button id="testMultipleBtn">测试连续音频播放</button>
+        <button id="testOverlapBtn">测试重叠音频播放</button>
+        <button id="stopBtn" disabled>停止所有播放</button>
+        
+        <div class="status" id="status">准备测试</div>
+        
+        <div>
+            <h3>测试日志</h3>
+            <div class="log" id="log"></div>
+        </div>
+    </div>
+
+    <script>
+        // 全局AudioContext用于音频播放，避免重复创建导致的卡顿
+        let globalAudioContext = null;
+        // 音频播放队列管理
+        let audioPlaybackQueue = Promise.resolve();
+        let currentAudioSource = null;
+
+        function log(message) {
+            const timestamp = new Date().toLocaleTimeString();
+            const logElement = document.getElementById('log');
+            logElement.textContent += `[${timestamp}] ${message}\n`;
+            logElement.scrollTop = logElement.scrollHeight;
+            console.log(message);
+        }
+
+        function setStatus(message, isPlaying = false) {
+            const statusElement = document.getElementById('status');
+            statusElement.textContent = message;
+            statusElement.className = isPlaying ? 'status playing' : 'status';
+        }
+
+        // 生成测试音频数据（PCM16格式）
+        function generateTestAudio(frequency, duration) {
+            const sampleRate = 24000;
+            const sampleCount = sampleRate * duration;
+            
+            // 生成PCM16数据
+            const pcm16Data = new Int16Array(sampleCount);
+            for (let i = 0; i < sampleCount; i++) {
+                const sample = Math.sin(2 * Math.PI * frequency * i / sampleRate) * 0.5; // 降低音量
+                pcm16Data[i] = Math.round(sample * 16383);
+            }
+            
+            // 转换为字节数组
+            const bytes = new Uint8Array(pcm16Data.length * 2);
+            for (let i = 0; i < pcm16Data.length; i++) {
+                const value = pcm16Data[i];
+                bytes[i * 2] = value & 0xFF;
+                bytes[i * 2 + 1] = (value >> 8) & 0xFF;
+            }
+            
+            // 编码为Base64
+            const blob = new Blob([bytes]);
+            return new Promise((resolve) => {
+                const reader = new FileReader();
+                reader.onload = function() {
+                    const result = reader.result;
+                    if (typeof result === 'string') {
+                        const base64Audio = result.split(',')[1];
+                        resolve(base64Audio);
+                    }
+                };
+                reader.readAsDataURL(blob);
+            });
+        }
+
+        // 优化后的音频播放函数
+        async function handleAudioPlayback(audioData) {
+            // 将音频播放加入队列，避免重叠播放
+            audioPlaybackQueue = audioPlaybackQueue.then(async () => {
+                try {
+                    // 停止当前播放的音频（如果有）
+                    if (currentAudioSource) {
+                        currentAudioSource.stop();
+                        currentAudioSource = null;
+                    }
+                    
+                    // Decode base64 audio data
+                    const binaryData = atob(audioData);
+                    const arrayBuffer = new ArrayBuffer(binaryData.length);
+                    const uint8Array = new Uint8Array(arrayBuffer);
+                    
+                    for (let i = 0; i < binaryData.length; i++) {
+                        uint8Array[i] = binaryData.charCodeAt(i);
+                    }
+
+                    // 使用全局AudioContext避免重复创建
+                    if (!globalAudioContext) {
+                        globalAudioContext = new (window.AudioContext || window.webkitAudioContext)({
+                            sampleRate: 24000 // GPT uses 24kHz
+                        });
+                    }
+                    
+                    // 确保AudioContext处于运行状态
+                    if (globalAudioContext.state === 'suspended') {
+                        await globalAudioContext.resume();
+                    }
+                    
+                    // Convert PCM16 bytes to Float32 samples
+                    const pcm16Data = new Int16Array(arrayBuffer);
+                    const sampleCount = pcm16Data.length;
+                    
+                    if (sampleCount === 0) {
+                        log('⚠️ 空音频数据，跳过播放');
+                        return;
+                    }
+                    
+                    const audioBuffer = globalAudioContext.createBuffer(1, sampleCount, 24000); // mono, 24kHz
+                    const channelData = audioBuffer.getChannelData(0);
+                    
+                    // Convert PCM16 to Float32 (-1 to 1 range) with better precision
+                    for (let i = 0; i < sampleCount; i++) {
+                        channelData[i] = Math.max(-1, Math.min(1, pcm16Data[i] / 32768.0));
+                    }
+                    
+                    // 创建音频源并播放
+                    const source = globalAudioContext.createBufferSource();
+                    source.buffer = audioBuffer;
+                    currentAudioSource = source;
+                    
+                    // 添加音量控制和低通滤波器减少噪音
+                    const gainNode = globalAudioContext.createGain();
+                    const filterNode = globalAudioContext.createBiquadFilter();
+                    
+                    gainNode.gain.value = 0.7; // 适中的音量
+                    filterNode.type = 'lowpass';
+                    filterNode.frequency.value = 8000; // 8kHz低通滤波，去除高频噪音
+                    filterNode.Q.value = 1;
+                    
+                    source.connect(filterNode);
+                    filterNode.connect(gainNode);
+                    gainNode.connect(globalAudioContext.destination);
+                    
+                    // 返回Promise以便等待播放完成
+                    return new Promise((resolve, reject) => {
+                        source.onended = () => {
+                            log(`✓ 音频播放完成: ${audioBuffer.duration.toFixed(2)}s`);
+                            currentAudioSource = null;
+                            setStatus('播放完成');
+                            resolve();
+                        };
+                        
+                        try {
+                            source.start();
+                            log(`🔊 开始播放音频: ${sampleCount} 样本, ${audioBuffer.duration.toFixed(2)}s`);
+                            setStatus(`正在播放 ${audioBuffer.duration.toFixed(2)}s 音频...`, true);
+                            
+                            // 设置超时以防音频卡住
+                            setTimeout(() => {
+                                if (currentAudioSource === source) {
+                                    log('⚠️ 音频播放超时，停止播放');
+                                    try {
+                                        source.stop();
+                                    } catch (e) {
+                                        log(`警告: 停止超时音频源时出错: ${e.message}`);
+                                    }
+                                    currentAudioSource = null;
+                                    setStatus('播放超时');
+                                    resolve();
+                                }
+                            }, audioBuffer.duration * 1000 + 1000); // 音频时长 + 1秒缓冲
+                            
+                        } catch (error) {
+                            log(`❌ 启动音频源失败: ${error.message}`);
+                            currentAudioSource = null;
+                            setStatus('播放失败');
+                            reject(error);
+                        }
+                    });
+                    
+                } catch (error) {
+                    log(`❌ 音频播放失败: ${error.message}`);
+                    setStatus('播放失败');
+                    throw error;
+                }
+            });
+            
+            return audioPlaybackQueue;
+        }
+
+        // 停止所有音频播放
+        function stopAllAudio() {
+            if (currentAudioSource) {
+                try {
+                    currentAudioSource.stop();
+                    log('🛑 停止当前音频播放');
+                } catch (error) {
+                    log(`警告: 停止音频源时出错: ${error.message}`);
+                }
+                currentAudioSource = null;
+            }
+            
+            if (globalAudioContext && globalAudioContext.state !== 'closed') {
+                try {
+                    globalAudioContext.close();
+                    log('🛑 关闭AudioContext');
+                } catch (error) {
+                    log(`警告: 关闭AudioContext时出错: ${error.message}`);
+                }
+                globalAudioContext = null;
+            }
+            
+            // 重置播放队列
+            audioPlaybackQueue = Promise.resolve();
+            setStatus('已停止所有播放');
+        }
+
+        // 测试单个音频播放
+        async function testSingleAudio() {
+            try {
+                log('🎵 开始测试单个音频播放...');
+                setStatus('生成测试音频...');
+                
+                const audioData = await generateTestAudio(440, 2); // 440Hz, 2秒
+                log(`生成测试音频: ${audioData.length} 字符`);
+                
+                await handleAudioPlayback(audioData);
+                log('✅ 单个音频播放测试完成');
+                
+            } catch (error) {
+                log(`❌ 单个音频播放测试失败: ${error.message}`);
+                setStatus('测试失败');
+            }
+        }
+
+        // 测试连续音频播放
+        async function testMultipleAudio() {
+            try {
+                log('🎵 开始测试连续音频播放...');
+                setStatus('生成多个测试音频...');
+                
+                const frequencies = [440, 523, 659, 784]; // C大调和弦
+                const promises = [];
+                
+                for (let i = 0; i < frequencies.length; i++) {
+                    const freq = frequencies[i];
+                    log(`播放音频 ${i + 1}/${frequencies.length}: ${freq}Hz`);
+                    
+                    const audioData = await generateTestAudio(freq, 1); // 1秒每个音符
+                    promises.push(handleAudioPlayback(audioData));
+                    
+                    // 等待一小段时间再播放下一个（测试队列功能）
+                    await new Promise(resolve => setTimeout(resolve, 100));
+                }
+                
+                await Promise.all(promises);
+                log('✅ 连续音频播放测试完成');
+                
+            } catch (error) {
+                log(`❌ 连续音频播放测试失败: ${error.message}`);
+                setStatus('测试失败');
+            }
+        }
+
+        // 测试重叠音频播放（应该被队列管理）
+        async function testOverlapAudio() {
+            try {
+                log('🎵 开始测试重叠音频播放...');
+                setStatus('同时触发多个音频播放...');
+                
+                // 同时触发多个音频播放，测试队列管理
+                const promises = [];
+                const frequencies = [330, 440, 550];
+                
+                for (const freq of frequencies) {
+                    const audioData = await generateTestAudio(freq, 1.5);
+                    promises.push(handleAudioPlayback(audioData));
+                    log(`触发 ${freq}Hz 音频播放`);
+                }
+                
+                // 等待所有播放完成
+                await Promise.all(promises);
+                log('✅ 重叠音频播放测试完成（应该是顺序播放）');
+                
+            } catch (error) {
+                log(`❌ 重叠音频播放测试失败: ${error.message}`);
+                setStatus('测试失败');
+            }
+        }
+
+        // 事件监听器
+        document.getElementById('testSingleBtn').addEventListener('click', testSingleAudio);
+        document.getElementById('testMultipleBtn').addEventListener('click', testMultipleAudio);
+        document.getElementById('testOverlapBtn').addEventListener('click', testOverlapAudio);
+        document.getElementById('stopBtn').addEventListener('click', () => {
+            stopAllAudio();
+            document.getElementById('stopBtn').disabled = true;
+        });
+
+        // 启用停止按钮
+        document.addEventListener('click', (e) => {
+            if (e.target.id.includes('test')) {
+                document.getElementById('stopBtn').disabled = false;
+            }
+        });
+
+        // 页面卸载时清理资源
+        window.addEventListener('beforeunload', stopAllAudio);
+
+        log('📱 音频播放流畅性测试页面加载完成');
+        log('💡 提示：点击测试按钮验证音频播放是否流畅，无卡顿');
+    </script>
+</body>
+</html>
