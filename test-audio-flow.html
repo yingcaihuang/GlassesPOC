@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>音频处理流程测试</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        .status { padding: 10px; margin: 10px 0; border-radius: 5px; }
+        .success { background-color: #d4edda; color: #155724; }
+        .error { background-color: #f8d7da; color: #721c24; }
+        .warning { background-color: #fff3cd; color: #856404; }
+        button { padding: 10px 20px; margin: 5px; }
+        #log { background: #f8f9fa; padding: 10px; height: 400px; overflow-y: auto; border: 1px solid #ddd; }
+    </style>
+</head>
+<body>
+    <h1>完整音频处理流程测试</h1>
+    
+    <div id="status" class="status warning">准备测试...</div>
+    
+    <div>
+        <button onclick="testCompleteFlow()">测试完整音频流程</button>
+        <button onclick="clearLog()">清空日志</button>
+    </div>
+    
+    <h3>测试日志:</h3>
+    <div id="log"></div>
+    
+    <script>
+        let testToken = null;
+        let websocket = null;
+        let mediaRecorder = null;
+        let mediaStream = null;
+        
+        function log(message, type = 'info') {
+            const logDiv = document.getElementById('log');
+            const timestamp = new Date().toLocaleTimeString();
+            const color = type === 'error' ? 'red' : type === 'success' ? 'green' : 'black';
+            logDiv.innerHTML += `<div style="color: ${color}">[${timestamp}] ${message}</div>`;
+            logDiv.scrollTop = logDiv.scrollHeight;
+        }
+        
+        function updateStatus(message, type) {
+            const statusDiv = document.getElementById('status');
+            statusDiv.textContent = message;
+            statusDiv.className = `status ${type}`;
+        }
+        
+        async function testCompleteFlow() {
+            try {
+                log('开始完整音频处理流程测试...');
+                updateStatus('测试中...', 'warning');
+                
+                // 1. 登录
+                log('1. 登录...');
+                const loginResponse = await fetch('/api/v1/auth/login', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        email: 'betty@123.com',
+                        password: 'Betty@123.com'
+                    })
+                });
+                
+                if (!loginResponse.ok) {
+                    throw new Error('登录失败');
+                }
+                
+                const loginData = await loginResponse.json();
+                testToken = loginData.token;
+                log('✓ 登录成功', 'success');
+                
+                // 2. 建立WebSocket连接
+                log('2. 建立WebSocket连接...');
+                await connectWebSocket();
+                
+                // 3. 获取麦克风权限
+                log('3. 获取麦克风权限...');
+                mediaStream = await navigator.mediaDevices.getUserMedia({
+                    audio: {
+                        sampleRate: 24000,  // 更新为24kHz以匹配GPT要求
+                        channelCount: 1,
+                        echoCancellation: true,
+                        noiseSuppression: true,
+                        autoGainControl: true
+                    }
+                });
+                log('✓ 麦克风权限获取成功', 'success');
+                
+                // 4. 开始录音
+                log('4. 开始录音（3秒）...');
+                await startRecording();
+                
+                // 5. 等待3秒
+                await new Promise(resolve => setTimeout(resolve, 3000));
+                
+                // 6. 停止录音并发送数据
+                log('5. 停止录音并发送数据...');
+                await stopRecording();
+                
+                log('✓ 完整流程测试完成', 'success');
+                updateStatus('测试完成', 'success');
+                
+            } catch (error) {
+                log('✗ 测试失败: ' + error.message, 'error');
+                updateStatus('测试失败', 'error');
+            }
+        }
+        
+        function connectWebSocket() {
+            return new Promise((resolve, reject) => {
+                const wsUrl = `ws://localhost:3000/api/v1/realtime/chat?token=${testToken}`;
+                websocket = new WebSocket(wsUrl);
+                
+                const timeout = setTimeout(() => {
+                    reject(new Error('WebSocket连接超时'));
+                }, 10000);
+                
+                websocket.onopen = () => {
+                    clearTimeout(timeout);
+                    log('✓ WebSocket连接成功', 'success');
+                    
+                    // 发送配置消息
+                    websocket.send(JSON.stringify({
+                        type: 'configure_session',
+                        config: {
+                            audio_format: 'pcm16',
+                            sample_rate: 24000,  // 更新为24kHz
+                            channels: 1
+                        }
+                    }));
+                    log('发送会话配置消息');
+                    resolve();
+                };
+                
+                websocket.onmessage = (event) => {
+                    try {
+                        const data = JSON.parse(event.data);
+                        log(`收到消息: ${data.type} - ${data.message || JSON.stringify(data)}`, 'success');
+                        
+                        if (data.type === 'text_response') {
+                            log(`GPT回复: ${data.text}`, 'success');
+                        } else if (data.type === 'response_complete') {
+                            log('✓ 音频处理完成！', 'success');
+                        }
+                    } catch (e) {
+                        log('收到非JSON消息: ' + event.data);
+                    }
+                };
+                
+                websocket.onerror = (error) => {
+                    clearTimeout(timeout);
+                    reject(new Error('WebSocket连接错误'));
+                };
+                
+                websocket.onclose = (event) => {
+                    log(`WebSocket连接关闭: code=${event.code}`);
+                };
+            });
+        }
+        
+        function startRecording() {
+            return new Promise((resolve, reject) => {
+                try {
+                    mediaRecorder = new MediaRecorder(mediaStream, {
+                        mimeType: 'audio/webm;codecs=opus'
+                    });
+                    
+                    mediaRecorder.ondataavailable = (event) => {
+                        if (event.data.size > 0 && websocket && websocket.readyState === WebSocket.OPEN) {
+                            // 转换为base64并发送
+                            const reader = new FileReader();
+                            reader.onload = () => {
+                                const base64Audio = reader.result.split(',')[1];
+                                websocket.send(JSON.stringify({
+                                    type: 'audio_data',
+                                    audio: base64Audio,
+                                    format: 'webm',
+                                    timestamp: Date.now()
+                                }));
+                                log(`发送音频数据块: ${event.data.size} 字节`);
+                            };
+                            reader.readAsDataURL(event.data);
+                        }
+                    };
+                    
+                    mediaRecorder.start(100); // 每100ms收集一次数据
+                    log('✓ 录音开始', 'success');
+                    resolve();
+                } catch (error) {
+                    reject(error);
+                }
+            });
+        }
+        
+        function stopRecording() {
+            return new Promise((resolve) => {
+                if (mediaRecorder && mediaRecorder.state === 'recording') {
+                    mediaRecorder.onstop = () => {
+                        log('录音停止');
+                        
+                        // 发送提交消息
+                        if (websocket && websocket.readyState === WebSocket.OPEN) {
+                            websocket.send(JSON.stringify({ type: 'commit_audio' }));
+                            log('发送音频提交消息');
+                        }
+                        
+                        resolve();
+                    };
+                    
+                    mediaRecorder.stop();
+                } else {
+                    resolve();
+                }
+            });
+        }
+        
+        function clearLog() {
+            document.getElementById('log').innerHTML = '';
+        }
+        
+        // 清理资源
+        window.onbeforeunload = function() {
+            if (mediaStream) {
+                mediaStream.getTracks().forEach(track => track.stop());
+            }
+            if (websocket) {
+                websocket.close();
+            }
+        };
+    </script>
+</body>
+</html>

@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>麦克风权限测试</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        .status { padding: 10px; margin: 10px 0; border-radius: 5px; }
+        .success { background-color: #d4edda; color: #155724; }
+        .error { background-color: #f8d7da; color: #721c24; }
+        .warning { background-color: #fff3cd; color: #856404; }
+        button { padding: 10px 20px; margin: 5px; }
+        #log { background: #f8f9fa; padding: 10px; height: 300px; overflow-y: auto; border: 1px solid #ddd; }
+        #audioLevel { width: 100%; height: 20px; background: #ddd; margin: 10px 0; }
+        #audioLevelBar { height: 100%; background: linear-gradient(to right, green, yellow, red); width: 0%; transition: width 0.1s; }
+    </style>
+</head>
+<body>
+    <h1>麦克风权限和录音测试</h1>
+    
+    <div id="status" class="status warning">准备测试...</div>
+    
+    <div>
+        <button onclick="testMicrophonePermission()">测试麦克风权限</button>
+        <button onclick="startRecording()">开始录音</button>
+        <button onclick="stopRecording()">停止录音</button>
+        <button onclick="clearLog()">清空日志</button>
+    </div>
+    
+    <div id="audioLevel">
+        <div id="audioLevelBar"></div>
+    </div>
+    
+    <h3>测试日志:</h3>
+    <div id="log"></div>
+    
+    <script>
+        let mediaStream = null;
+        let mediaRecorder = null;
+        let audioContext = null;
+        let analyser = null;
+        let animationFrame = null;
+        
+        function log(message, type = 'info') {
+            const logDiv = document.getElementById('log');
+            const timestamp = new Date().toLocaleTimeString();
+            const color = type === 'error' ? 'red' : type === 'success' ? 'green' : 'black';
+            logDiv.innerHTML += `<div style="color: ${color}">[${timestamp}] ${message}</div>`;
+            logDiv.scrollTop = logDiv.scrollHeight;
+        }
+        
+        function updateStatus(message, type) {
+            const statusDiv = document.getElementById('status');
+            statusDiv.textContent = message;
+            statusDiv.className = `status ${type}`;
+        }
+        
+        async function testMicrophonePermission() {
+            log('测试麦克风权限...');
+            try {
+                // 检查浏览器支持
+                if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+                    throw new Error('浏览器不支持 getUserMedia API');
+                }
+                
+                log('请求麦克风权限...');
+                const stream = await navigator.mediaDevices.getUserMedia({
+                    audio: {
+                        sampleRate: 16000,
+                        channelCount: 1,
+                        echoCancellation: true,
+                        noiseSuppression: true,
+                        autoGainControl: true
+                    }
+                });
+                
+                mediaStream = stream;
+                log('✓ 麦克风权限获取成功！', 'success');
+                updateStatus('麦克风权限已获取', 'success');
+                
+                // 显示音频设备信息
+                const audioTracks = stream.getAudioTracks();
+                if (audioTracks.length > 0) {
+                    const track = audioTracks[0];
+                    log(`音频设备: ${track.label || '未知设备'}`, 'success');
+                    log(`设备ID: ${track.getSettings().deviceId || '未知'}`, 'success');
+                    log(`采样率: ${track.getSettings().sampleRate || '未知'}`, 'success');
+                }
+                
+                // 设置音频分析器
+                setupAudioAnalyser(stream);
+                
+            } catch (error) {
+                log('✗ 麦克风权限获取失败: ' + error.message, 'error');
+                updateStatus('麦克风权限获取失败', 'error');
+                
+                // 详细的错误处理
+                if (error.name === 'NotAllowedError') {
+                    log('权限被拒绝。请点击浏览器地址栏的麦克风图标，选择"允许"，然后刷新页面重试。', 'error');
+                } else if (error.name === 'NotFoundError') {
+                    log('未找到麦克风设备。请确保您的设备已连接麦克风。', 'error');
+                } else if (error.name === 'NotReadableError') {
+                    log('无法访问麦克风，可能被其他应用程序占用。', 'error');
+                } else if (error.name === 'OverconstrainedError') {
+                    log('麦克风不支持所需的音频格式。', 'error');
+                } else if (error.name === 'SecurityError') {
+                    log('由于安全限制无法访问麦克风。请确保您在HTTPS环境中使用此功能。', 'error');
+                }
+            }
+        }
+        
+        function setupAudioAnalyser(stream) {
+            try {
+                audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                const source = audioContext.createMediaStreamSource(stream);
+                analyser = audioContext.createAnalyser();
+                analyser.fftSize = 256;
+                source.connect(analyser);
+                
+                log('✓ 音频分析器设置成功', 'success');
+                startAudioLevelMonitoring();
+            } catch (error) {
+                log('✗ 音频分析器设置失败: ' + error.message, 'error');
+            }
+        }
+        
+        function startAudioLevelMonitoring() {
+            if (!analyser) return;
+            
+            const dataArray = new Uint8Array(analyser.frequencyBinCount);
+            
+            function updateAudioLevel() {
+                if (!analyser) return;
+                
+                analyser.getByteFrequencyData(dataArray);
+                const average = dataArray.reduce((a, b) => a + b) / dataArray.length;
+                const level = (average / 255) * 100;
+                
+                const audioLevelBar = document.getElementById('audioLevelBar');
+                if (audioLevelBar) {
+                    audioLevelBar.style.width = level + '%';
+                }
+                
+                animationFrame = requestAnimationFrame(updateAudioLevel);
+            }
+            
+            updateAudioLevel();
+        }
+        
+        function startRecording() {
+            if (!mediaStream) {
+                log('请先获取麦克风权限', 'error');
+                return;
+            }
+            
+            try {
+                log('开始录音...');
+                
+                mediaRecorder = new MediaRecorder(mediaStream, {
+                    mimeType: 'audio/webm;codecs=opus'
+                });
+                
+                const audioChunks = [];
+                
+                mediaRecorder.ondataavailable = (event) => {
+                    if (event.data.size > 0) {
+                        audioChunks.push(event.data);
+                        log(`录音数据块: ${event.data.size} 字节`);
+                    }
+                };
+                
+                mediaRecorder.onstop = () => {
+                    log('录音停止');
+                    const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
+                    log(`录音完成，总大小: ${audioBlob.size} 字节`, 'success');
+                    
+                    // 创建播放链接
+                    const audioUrl = URL.createObjectURL(audioBlob);
+                    const audio = new Audio(audioUrl);
+                    log('录音已保存，可以播放测试');
+                };
+                
+                mediaRecorder.onerror = (event) => {
+                    log('录音错误: ' + event.error, 'error');
+                };
+                
+                mediaRecorder.start(100); // 每100ms收集一次数据
+                log('✓ 录音已开始', 'success');
+                updateStatus('正在录音...', 'warning');
+                
+            } catch (error) {
+                log('✗ 开始录音失败: ' + error.message, 'error');
+            }
+        }
+        
+        function stopRecording() {
+            if (mediaRecorder && mediaRecorder.state === 'recording') {
+                mediaRecorder.stop();
+                log('停止录音');
+                updateStatus('录音已停止', 'success');
+            } else {
+                log('没有正在进行的录音', 'warning');
+            }
+        }
+        
+        function clearLog() {
+            document.getElementById('log').innerHTML = '';
+        }
+        
+        // 页面加载时检查基本支持
+        window.onload = function() {
+            log('页面加载完成');
+            log('浏览器: ' + navigator.userAgent);
+            log('HTTPS: ' + (location.protocol === 'https:' ? '是' : '否'));
+            
+            if (!navigator.mediaDevices) {
+                log('✗ 浏览器不支持 MediaDevices API', 'error');
+                updateStatus('浏览器不支持', 'error');
+            } else if (!navigator.mediaDevices.getUserMedia) {
+                log('✗ 浏览器不支持 getUserMedia', 'error');
+                updateStatus('浏览器不支持', 'error');
+            } else {
+                log('✓ 浏览器支持音频录制', 'success');
+                updateStatus('浏览器支持正常', 'success');
+            }
+        };
+        
+        // 清理资源
+        window.onbeforeunload = function() {
+            if (mediaStream) {
+                mediaStream.getTracks().forEach(track => track.stop());
+            }
+            if (audioContext) {
+                audioContext.close();
+            }
+            if (animationFrame) {
+                cancelAnimationFrame(animationFrame);
+            }
+        };
+    </script>
+</body>
+</html>

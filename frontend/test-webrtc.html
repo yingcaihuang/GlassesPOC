@@ -1,0 +1,373 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WebRTC Audio Test</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        .test-section {
+            margin: 20px 0;
+            padding: 20px;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+        }
+        .status {
+            padding: 10px;
+            margin: 10px 0;
+            border-radius: 4px;
+        }
+        .success { background-color: #d4edda; color: #155724; }
+        .error { background-color: #f8d7da; color: #721c24; }
+        .info { background-color: #d1ecf1; color: #0c5460; }
+        button {
+            padding: 10px 20px;
+            margin: 5px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        .primary { background-color: #007bff; color: white; }
+        .danger { background-color: #dc3545; color: white; }
+        #audioLevel {
+            width: 100%;
+            height: 20px;
+            background-color: #f0f0f0;
+            border-radius: 10px;
+            overflow: hidden;
+            margin: 10px 0;
+        }
+        #audioLevelBar {
+            height: 100%;
+            background: linear-gradient(to right, #28a745, #ffc107, #dc3545);
+            width: 0%;
+            transition: width 0.1s;
+        }
+        #waveform {
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            margin: 10px 0;
+        }
+    </style>
+</head>
+<body>
+    <h1>WebRTC Audio Functionality Test</h1>
+    
+    <div class="test-section">
+        <h2>1. 浏览器兼容性检查</h2>
+        <div id="compatibility-status"></div>
+    </div>
+    
+    <div class="test-section">
+        <h2>2. 麦克风权限测试</h2>
+        <button id="requestMic" class="primary">请求麦克风权限</button>
+        <div id="mic-status"></div>
+    </div>
+    
+    <div class="test-section">
+        <h2>3. 音频采集和可视化测试</h2>
+        <button id="startRecording" class="primary" disabled>开始录音</button>
+        <button id="stopRecording" class="danger" disabled>停止录音</button>
+        <div id="recording-status"></div>
+        <div id="audioLevel">
+            <div id="audioLevelBar"></div>
+        </div>
+        <canvas id="waveform" width="400" height="100"></canvas>
+    </div>
+    
+    <div class="test-section">
+        <h2>4. WebSocket 连接测试</h2>
+        <button id="testWebSocket" class="primary">测试 WebSocket 连接</button>
+        <div id="websocket-status"></div>
+    </div>
+    
+    <div class="test-section">
+        <h2>5. 音频播放测试</h2>
+        <button id="testAudioPlayback" class="primary">测试音频播放</button>
+        <div id="playback-status"></div>
+    </div>
+
+    <script>
+        // Test results
+        const results = {
+            compatibility: false,
+            microphone: false,
+            recording: false,
+            websocket: false,
+            playback: false
+        };
+
+        // 1. Browser compatibility check
+        function checkCompatibility() {
+            const status = document.getElementById('compatibility-status');
+            const checks = [];
+            
+            // Check WebRTC support
+            if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+                checks.push('✓ getUserMedia API 支持');
+            } else {
+                checks.push('✗ getUserMedia API 不支持');
+            }
+            
+            // Check WebSocket support
+            if (window.WebSocket) {
+                checks.push('✓ WebSocket 支持');
+            } else {
+                checks.push('✗ WebSocket 不支持');
+            }
+            
+            // Check AudioContext support
+            if (window.AudioContext || window.webkitAudioContext) {
+                checks.push('✓ AudioContext 支持');
+            } else {
+                checks.push('✗ AudioContext 不支持');
+            }
+            
+            // Check MediaRecorder support
+            if (window.MediaRecorder) {
+                checks.push('✓ MediaRecorder 支持');
+            } else {
+                checks.push('✗ MediaRecorder 不支持');
+            }
+            
+            const allSupported = !checks.some(check => check.includes('✗'));
+            results.compatibility = allSupported;
+            
+            status.innerHTML = `
+                <div class="status ${allSupported ? 'success' : 'error'}">
+                    ${checks.join('<br>')}
+                </div>
+            `;
+        }
+
+        // 2. Microphone permission test
+        document.getElementById('requestMic').addEventListener('click', async () => {
+            const status = document.getElementById('mic-status');
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({
+                    audio: {
+                        sampleRate: 16000,
+                        channelCount: 1,
+                        echoCancellation: true,
+                        noiseSuppression: true,
+                        autoGainControl: true
+                    }
+                });
+                
+                results.microphone = true;
+                status.innerHTML = '<div class="status success">✓ 麦克风权限获取成功</div>';
+                document.getElementById('startRecording').disabled = false;
+                
+                // Stop the stream for now
+                stream.getTracks().forEach(track => track.stop());
+            } catch (error) {
+                results.microphone = false;
+                let errorMessage = '麦克风权限获取失败: ';
+                switch (error.name) {
+                    case 'NotAllowedError':
+                        errorMessage += '用户拒绝了麦克风权限';
+                        break;
+                    case 'NotFoundError':
+                        errorMessage += '未找到麦克风设备';
+                        break;
+                    case 'NotReadableError':
+                        errorMessage += '麦克风被其他应用占用';
+                        break;
+                    default:
+                        errorMessage += error.message;
+                }
+                status.innerHTML = `<div class="status error">✗ ${errorMessage}</div>`;
+            }
+        });
+
+        // 3. Audio recording and visualization test
+        let mediaRecorder = null;
+        let audioContext = null;
+        let analyser = null;
+        let animationFrame = null;
+
+        document.getElementById('startRecording').addEventListener('click', async () => {
+            const status = document.getElementById('recording-status');
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({
+                    audio: {
+                        sampleRate: 16000,
+                        channelCount: 1,
+                        echoCancellation: true,
+                        noiseSuppression: true,
+                        autoGainControl: true
+                    }
+                });
+
+                // Set up audio context for visualization
+                audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                const source = audioContext.createMediaStreamSource(stream);
+                analyser = audioContext.createAnalyser();
+                analyser.fftSize = 2048;
+                source.connect(analyser);
+
+                // Start visualization
+                visualizeAudio();
+
+                // Set up MediaRecorder
+                mediaRecorder = new MediaRecorder(stream, {
+                    mimeType: 'audio/webm;codecs=opus'
+                });
+
+                mediaRecorder.start(100);
+                results.recording = true;
+                
+                status.innerHTML = '<div class="status success">✓ 录音开始，音频可视化正常</div>';
+                document.getElementById('startRecording').disabled = true;
+                document.getElementById('stopRecording').disabled = false;
+
+            } catch (error) {
+                results.recording = false;
+                status.innerHTML = `<div class="status error">✗ 录音失败: ${error.message}</div>`;
+            }
+        });
+
+        document.getElementById('stopRecording').addEventListener('click', () => {
+            if (mediaRecorder && mediaRecorder.state === 'recording') {
+                mediaRecorder.stop();
+            }
+            if (audioContext) {
+                audioContext.close();
+            }
+            if (animationFrame) {
+                cancelAnimationFrame(animationFrame);
+            }
+            
+            document.getElementById('startRecording').disabled = false;
+            document.getElementById('stopRecording').disabled = true;
+            document.getElementById('recording-status').innerHTML = '<div class="status info">录音已停止</div>';
+        });
+
+        function visualizeAudio() {
+            if (!analyser) return;
+
+            const canvas = document.getElementById('waveform');
+            const canvasContext = canvas.getContext('2d');
+            const dataArray = new Uint8Array(analyser.frequencyBinCount);
+
+            function draw() {
+                if (!analyser) return;
+
+                analyser.getByteFrequencyData(dataArray);
+                
+                // Update audio level
+                const average = dataArray.reduce((a, b) => a + b) / dataArray.length;
+                const level = (average / 255) * 100;
+                document.getElementById('audioLevelBar').style.width = level + '%';
+
+                // Draw waveform
+                canvasContext.fillStyle = 'rgb(240, 240, 240)';
+                canvasContext.fillRect(0, 0, canvas.width, canvas.height);
+                
+                canvasContext.lineWidth = 2;
+                canvasContext.strokeStyle = 'rgb(59, 130, 246)';
+                canvasContext.beginPath();
+                
+                const sliceWidth = canvas.width / dataArray.length;
+                let x = 0;
+                
+                for (let i = 0; i < dataArray.length; i++) {
+                    const v = dataArray[i] / 128.0;
+                    const y = v * canvas.height / 2;
+                    
+                    if (i === 0) {
+                        canvasContext.moveTo(x, y);
+                    } else {
+                        canvasContext.lineTo(x, y);
+                    }
+                    
+                    x += sliceWidth;
+                }
+                
+                canvasContext.lineTo(canvas.width, canvas.height / 2);
+                canvasContext.stroke();
+                
+                animationFrame = requestAnimationFrame(draw);
+            }
+            
+            draw();
+        }
+
+        // 4. WebSocket connection test
+        document.getElementById('testWebSocket').addEventListener('click', () => {
+            const status = document.getElementById('websocket-status');
+            status.innerHTML = '<div class="status info">正在测试 WebSocket 连接...</div>';
+            
+            try {
+                const ws = new WebSocket('ws://localhost:8080/api/v1/realtime/chat?token=test');
+                
+                const timeout = setTimeout(() => {
+                    ws.close();
+                    results.websocket = false;
+                    status.innerHTML = '<div class="status error">✗ WebSocket 连接超时</div>';
+                }, 5000);
+                
+                ws.onopen = () => {
+                    clearTimeout(timeout);
+                    results.websocket = true;
+                    status.innerHTML = '<div class="status success">✓ WebSocket 连接成功</div>';
+                    ws.close();
+                };
+                
+                ws.onerror = (error) => {
+                    clearTimeout(timeout);
+                    results.websocket = false;
+                    status.innerHTML = '<div class="status error">✗ WebSocket 连接失败 (服务器可能未运行)</div>';
+                };
+                
+            } catch (error) {
+                results.websocket = false;
+                status.innerHTML = `<div class="status error">✗ WebSocket 测试失败: ${error.message}</div>`;
+            }
+        });
+
+        // 5. Audio playback test
+        document.getElementById('testAudioPlayback').addEventListener('click', async () => {
+            const status = document.getElementById('playback-status');
+            try {
+                // Generate a simple test tone
+                const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                const oscillator = audioContext.createOscillator();
+                const gainNode = audioContext.createGain();
+                
+                oscillator.connect(gainNode);
+                gainNode.connect(audioContext.destination);
+                
+                oscillator.frequency.value = 440; // A4 note
+                gainNode.gain.value = 0.1; // Low volume
+                
+                oscillator.start();
+                setTimeout(() => {
+                    oscillator.stop();
+                    audioContext.close();
+                }, 500); // Play for 500ms
+                
+                results.playback = true;
+                status.innerHTML = '<div class="status success">✓ 音频播放测试成功 (应该听到短暂的音调)</div>';
+                
+            } catch (error) {
+                results.playback = false;
+                status.innerHTML = `<div class="status error">✗ 音频播放测试失败: ${error.message}</div>`;
+            }
+        });
+
+        // Initialize compatibility check
+        checkCompatibility();
+
+        // Show final results
+        window.addEventListener('beforeunload', () => {
+            console.log('WebRTC Test Results:', results);
+        });
+    </script>
+</body>
+</html>

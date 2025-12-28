@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>连接测试 - 修复后</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        .test-item { margin: 10px 0; padding: 10px; border: 1px solid #ddd; border-radius: 5px; }
+        .success { background-color: #d4edda; border-color: #c3e6cb; }
+        .error { background-color: #f8d7da; border-color: #f5c6cb; }
+        .pending { background-color: #fff3cd; border-color: #ffeaa7; }
+        button { padding: 10px 20px; margin: 5px; cursor: pointer; }
+    </style>
+</head>
+<body>
+    <h1>连接测试 - 修复后</h1>
+    <p>测试各个端点的连接状态</p>
+    
+    <div id="results"></div>
+    
+    <button onclick="runTests()">运行测试</button>
+    <button onclick="clearResults()">清除结果</button>
+
+    <script>
+        const resultsDiv = document.getElementById('results');
+        
+        function addResult(test, status, message, details = '') {
+            const div = document.createElement('div');
+            div.className = `test-item ${status}`;
+            div.innerHTML = `
+                <strong>${test}</strong>: ${message}
+                ${details ? `<br><small>${details}</small>` : ''}
+            `;
+            resultsDiv.appendChild(div);
+        }
+        
+        function clearResults() {
+            resultsDiv.innerHTML = '';
+        }
+        
+        async function testEndpoint(name, url, options = {}) {
+            try {
+                addResult(name, 'pending', '测试中...');
+                const response = await fetch(url, {
+                    timeout: 5000,
+                    ...options
+                });
+                
+                const data = await response.text();
+                
+                if (response.ok) {
+                    addResult(name, 'success', `成功 (${response.status})`, 
+                        `响应: ${data.substring(0, 100)}${data.length > 100 ? '...' : ''}`);
+                } else {
+                    addResult(name, 'error', `失败 (${response.status})`, 
+                        `响应: ${data.substring(0, 100)}${data.length > 100 ? '...' : ''}`);
+                }
+            } catch (error) {
+                addResult(name, 'error', '连接失败', error.message);
+            }
+        }
+        
+        async function runTests() {
+            clearResults();
+            
+            // 测试健康检查
+            await testEndpoint('健康检查 (直接)', 'http://localhost:8080/health');
+            await testEndpoint('健康检查 (代理)', 'http://localhost:3000/health');
+            
+            // 测试前端
+            await testEndpoint('前端首页', 'http://localhost:3000/');
+            
+            // 测试API端点
+            await testEndpoint('登录API', 'http://localhost:3000/api/v1/auth/login', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    email: 'test@example.com',
+                    password: 'testpassword'
+                })
+            });
+            
+            addResult('测试完成', 'success', '所有测试已完成');
+        }
+        
+        // 页面加载时自动运行测试
+        window.onload = () => {
+            setTimeout(runTests, 1000);
+        };
+    </script>
+</body>
+</html>

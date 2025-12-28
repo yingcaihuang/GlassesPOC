@@ -1,0 +1,454 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>简化音频测试</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        .status {
+            padding: 10px;
+            margin: 10px 0;
+            border-radius: 4px;
+            font-weight: bold;
+        }
+        .success { background-color: #d4edda; color: #155724; }
+        .error { background-color: #f8d7da; color: #721c24; }
+        .info { background-color: #d1ecf1; color: #0c5460; }
+        .warning { background-color: #fff3cd; color: #856404; }
+        button {
+            background-color: #007bff;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 4px;
+            cursor: pointer;
+            margin: 5px;
+        }
+        button:hover { background-color: #0056b3; }
+        button:disabled {
+            background-color: #6c757d;
+            cursor: not-allowed;
+        }
+        .recording {
+            background-color: #dc3545;
+        }
+        .recording:hover {
+            background-color: #c82333;
+        }
+        #log {
+            background-color: #f8f9fa;
+            border: 1px solid #dee2e6;
+            padding: 10px;
+            height: 400px;
+            overflow-y: auto;
+            font-family: monospace;
+            font-size: 12px;
+            white-space: pre-wrap;
+        }
+        .audio-level {
+            width: 100%;
+            height: 20px;
+            background-color: #e9ecef;
+            border-radius: 10px;
+            overflow: hidden;
+            margin: 10px 0;
+        }
+        .audio-level-bar {
+            height: 100%;
+            background-color: #28a745;
+            transition: width 0.1s;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>简化音频测试 - 直接使用Web Audio API</h1>
+        
+        <div id="status" class="status info">准备就绪</div>
+        
+        <div>
+            <button id="loginBtn" onclick="testLogin()">1. 测试登录</button>
+            <button id="connectBtn" onclick="testWebSocket()" disabled>2. 连接WebSocket</button>
+            <button id="micBtn" onclick="testMicrophone()" disabled>3. 测试麦克风</button>
+            <button id="recordBtn" onclick="toggleRecording()" disabled>4. 开始录音测试</button>
+        </div>
+        
+        <div class="audio-level">
+            <div id="audioLevelBar" class="audio-level-bar" style="width: 0%"></div>
+        </div>
+        
+        <div>
+            <h3>测试日志:</h3>
+            <div id="log"></div>
+        </div>
+    </div>
+
+    <script>
+        let token = null;
+        let ws = null;
+        let audioContext = null;
+        let analyser = null;
+        let stream = null;
+        let isRecording = false;
+        let animationFrame = null;
+        let scriptProcessor = null;
+        let audioChunks = [];
+
+        function log(message) {
+            const timestamp = new Date().toLocaleTimeString();
+            const logElement = document.getElementById('log');
+            logElement.textContent += `[${timestamp}] ${message}\n`;
+            logElement.scrollTop = logElement.scrollHeight;
+            console.log(message);
+        }
+
+        function setStatus(message, type = 'info') {
+            const statusElement = document.getElementById('status');
+            statusElement.textContent = message;
+            statusElement.className = `status ${type}`;
+        }
+
+        async function testLogin() {
+            try {
+                log('开始登录测试...');
+                setStatus('正在登录...', 'info');
+                
+                const response = await fetch('/api/v1/auth/login', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        email: 'betty@123.com',
+                        password: 'Betty@123.com'
+                    })
+                });
+                
+                if (response.ok) {
+                    const data = await response.json();
+                    token = data.token;
+                    log('✓ 登录成功');
+                    setStatus('登录成功', 'success');
+                    document.getElementById('connectBtn').disabled = false;
+                } else {
+                    throw new Error(`登录失败: ${response.status}`);
+                }
+            } catch (error) {
+                log(`❌ 登录失败: ${error.message}`);
+                setStatus('登录失败', 'error');
+            }
+        }
+
+        async function testWebSocket() {
+            try {
+                log('开始WebSocket连接测试...');
+                setStatus('正在连接WebSocket...', 'info');
+                
+                const wsUrl = `ws://localhost:3000/api/v1/realtime/chat?token=${token}`;
+                ws = new WebSocket(wsUrl);
+                
+                ws.onopen = () => {
+                    log('✓ WebSocket连接成功');
+                    setStatus('WebSocket已连接', 'success');
+                    document.getElementById('micBtn').disabled = false;
+                    
+                    // 发送会话配置
+                    const config = {
+                        type: 'configure_session',
+                        config: {
+                            audio_format: 'pcm16',
+                            sample_rate: 24000,
+                            channels: 1
+                        }
+                    };
+                    ws.send(JSON.stringify(config));
+                    log('发送会话配置');
+                };
+                
+                ws.onmessage = (event) => {
+                    const message = JSON.parse(event.data);
+                    log(`收到消息: ${message.type} - ${message.message || JSON.stringify(message)}`);
+                };
+                
+                ws.onerror = (error) => {
+                    log(`❌ WebSocket错误: ${error}`);
+                    setStatus('WebSocket连接错误', 'error');
+                };
+                
+                ws.onclose = (event) => {
+                    log(`WebSocket连接关闭: ${event.code}`);
+                    setStatus('WebSocket已断开', 'warning');
+                };
+                
+            } catch (error) {
+                log(`❌ WebSocket连接失败: ${error.message}`);
+                setStatus('WebSocket连接失败', 'error');
+            }
+        }
+
+        async function testMicrophone() {
+            try {
+                log('开始麦克风测试...');
+                setStatus('正在获取麦克风权限...', 'info');
+                
+                stream = await navigator.mediaDevices.getUserMedia({
+                    audio: {
+                        sampleRate: 48000,
+                        channelCount: 1,
+                        echoCancellation: true,
+                        noiseSuppression: true,
+                        autoGainControl: true
+                    }
+                });
+                
+                // 创建AudioContext - 直接使用24kHz
+                audioContext = new (window.AudioContext || window.webkitAudioContext)({
+                    sampleRate: 24000
+                });
+                
+                log(`AudioContext创建成功，采样率: ${audioContext.sampleRate}Hz`);
+                
+                // 创建分析器用于可视化
+                analyser = audioContext.createAnalyser();
+                const source = audioContext.createMediaStreamSource(stream);
+                source.connect(analyser);
+                analyser.fftSize = 256;
+                
+                log('✓ 麦克风权限获取成功');
+                setStatus('麦克风就绪', 'success');
+                document.getElementById('recordBtn').disabled = false;
+                
+                // 开始音频级别监控
+                updateAudioLevel();
+                
+            } catch (error) {
+                log(`❌ 麦克风权限获取失败: ${error.message}`);
+                setStatus('麦克风权限被拒绝', 'error');
+            }
+        }
+
+        function updateAudioLevel() {
+            if (analyser) {
+                const dataArray = new Uint8Array(analyser.frequencyBinCount);
+                analyser.getByteFrequencyData(dataArray);
+                const average = dataArray.reduce((a, b) => a + b) / dataArray.length;
+                const percentage = Math.min(100, (average / 128) * 100);
+                
+                document.getElementById('audioLevelBar').style.width = `${percentage}%`;
+                
+                animationFrame = requestAnimationFrame(updateAudioLevel);
+            }
+        }
+
+        // 直接使用Web Audio API录制音频
+        async function startRecording() {
+            try {
+                log('开始录音（使用Web Audio API）...');
+                setStatus('正在录音...', 'warning');
+                
+                audioChunks = [];
+                
+                // 创建ScriptProcessor用于实时音频处理
+                scriptProcessor = audioContext.createScriptProcessor(4096, 1, 1);
+                const source = audioContext.createMediaStreamSource(stream);
+                
+                source.connect(scriptProcessor);
+                scriptProcessor.connect(audioContext.destination);
+                
+                scriptProcessor.onaudioprocess = (event) => {
+                    if (!isRecording) return;
+                    
+                    const inputBuffer = event.inputBuffer;
+                    const inputData = inputBuffer.getChannelData(0);
+                    
+                    // 复制音频数据
+                    const chunk = new Float32Array(inputData.length);
+                    chunk.set(inputData);
+                    audioChunks.push(chunk);
+                    
+                    log(`录音数据块: ${chunk.length} 样本`);
+                };
+                
+                isRecording = true;
+                
+                const recordBtn = document.getElementById('recordBtn');
+                recordBtn.textContent = '⏹️ 停止录音';
+                recordBtn.className = 'recording';
+                
+                log('✓ 录音已开始（Web Audio API）');
+                
+            } catch (error) {
+                log(`❌ 开始录音失败: ${error.message}`);
+                setStatus('录音启动失败', 'error');
+            }
+        }
+
+        function stopRecording() {
+            if (!isRecording) return;
+            
+            log('停止录音，开始处理音频数据...');
+            isRecording = false;
+            
+            if (scriptProcessor) {
+                scriptProcessor.disconnect();
+                scriptProcessor = null;
+            }
+            
+            const recordBtn = document.getElementById('recordBtn');
+            recordBtn.textContent = '4. 开始录音测试';
+            recordBtn.className = '';
+            
+            setStatus('录音已停止，处理中...', 'info');
+            
+            // 处理录制的音频数据
+            processRecordedAudio();
+        }
+
+        async function processRecordedAudio() {
+            try {
+                if (audioChunks.length === 0) {
+                    log('⚠️ 没有录音数据');
+                    return;
+                }
+                
+                // 合并所有音频块
+                const totalLength = audioChunks.reduce((sum, chunk) => sum + chunk.length, 0);
+                const combinedData = new Float32Array(totalLength);
+                let offset = 0;
+                
+                for (const chunk of audioChunks) {
+                    combinedData.set(chunk, offset);
+                    offset += chunk.length;
+                }
+                
+                log(`合并音频数据: ${combinedData.length} 样本, 时长: ${(combinedData.length / 24000).toFixed(2)} 秒`);
+                
+                // 转换为PCM16
+                const pcm16 = new Int16Array(combinedData.length);
+                for (let i = 0; i < combinedData.length; i++) {
+                    const sample = Math.max(-1, Math.min(1, combinedData[i]));
+                    pcm16[i] = Math.round(sample * 32767);
+                }
+                
+                // 转换为字节数组
+                const bytes = new Uint8Array(pcm16.length * 2);
+                for (let i = 0; i < pcm16.length; i++) {
+                    const value = pcm16[i];
+                    bytes[i * 2] = value & 0xFF;
+                    bytes[i * 2 + 1] = (value >> 8) & 0xFF;
+                }
+                
+                log(`PCM16转换完成: ${bytes.length} 字节`);
+                
+                // 使用更安全的Base64编码方法
+                let base64Audio = '';
+                try {
+                    // 尝试使用FileReader API进行Base64编码
+                    const blob = new Blob([bytes]);
+                    const reader = new FileReader();
+                    
+                    reader.onload = function() {
+                        const result = reader.result;
+                        if (typeof result === 'string') {
+                            // 移除data URL前缀
+                            base64Audio = result.split(',')[1];
+                            log(`Base64编码完成: ${base64Audio.length} 字符`);
+                            
+                            // 发送到服务器
+                            sendAudioToServer(base64Audio);
+                        }
+                    };
+                    
+                    reader.onerror = function() {
+                        log('FileReader编码失败，使用备用方法...');
+                        // 备用方法：分块处理但确保Base64有效性
+                        base64Audio = encodeBase64Chunked(bytes);
+                        log(`Base64编码完成（备用方法）: ${base64Audio.length} 字符`);
+                        sendAudioToServer(base64Audio);
+                    };
+                    
+                    reader.readAsDataURL(blob);
+                    
+                } catch (error) {
+                    log(`Base64编码失败: ${error.message}，使用备用方法...`);
+                    // 备用方法
+                    base64Audio = encodeBase64Chunked(bytes);
+                    log(`Base64编码完成（备用方法）: ${base64Audio.length} 字符`);
+                    sendAudioToServer(base64Audio);
+                }
+                
+            } catch (error) {
+                log(`❌ 音频处理失败: ${error.message}`);
+                setStatus('音频处理失败', 'error');
+            }
+        }
+
+        // 备用的分块Base64编码方法
+        function encodeBase64Chunked(bytes) {
+            let base64 = '';
+            const chunkSize = 3 * 1024; // 使用3的倍数避免Base64填充问题
+            
+            for (let i = 0; i < bytes.length; i += chunkSize) {
+                const chunk = bytes.slice(i, i + chunkSize);
+                const chunkArray = Array.from(chunk);
+                base64 += btoa(String.fromCharCode.apply(null, chunkArray));
+            }
+            
+            return base64;
+        }
+
+        // 发送音频数据到服务器
+        function sendAudioToServer(base64Audio) {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({
+                    type: 'audio_data',
+                    audio: base64Audio,
+                    timestamp: Date.now()
+                }));
+                
+                log(`✓ 音频数据已发送`);
+                
+                // 发送提交消息
+                ws.send(JSON.stringify({
+                    type: 'commit_audio',
+                    timestamp: Date.now()
+                }));
+                
+                log('✓ 音频提交消息已发送');
+                setStatus('音频已发送，等待AI回复...', 'info');
+            } else {
+                log('❌ WebSocket未连接');
+            }
+        }
+
+        async function toggleRecording() {
+            if (!isRecording) {
+                await startRecording();
+            } else {
+                stopRecording();
+            }
+        }
+
+        // 页面卸载时清理资源
+        window.addEventListener('beforeunload', () => {
+            if (ws) ws.close();
+            if (stream) stream.getTracks().forEach(track => track.stop());
+            if (audioContext) audioContext.close();
+            if (animationFrame) cancelAnimationFrame(animationFrame);
+        });
+    </script>
+</body>
+</html>

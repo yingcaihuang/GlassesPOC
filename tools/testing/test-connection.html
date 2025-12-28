@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>连接测试</title>
+</head>
+<body>
+    <h1>连接测试</h1>
+    <div id="results"></div>
+    
+    <script>
+        const results = document.getElementById('results');
+        
+        // 测试后端健康检查
+        fetch('/health')
+            .then(response => response.json())
+            .then(data => {
+                results.innerHTML += '<p>✅ 后端连接成功: ' + JSON.stringify(data) + '</p>';
+            })
+            .catch(error => {
+                results.innerHTML += '<p>❌ 后端连接失败: ' + error.message + '</p>';
+            });
+            
+        // 测试 WebSocket 连接
+        const wsUrl = 'ws://localhost:3000/api/v1/realtime/chat?token=test';
+        const ws = new WebSocket(wsUrl);
+        
+        ws.onopen = function() {
+            results.innerHTML += '<p>✅ WebSocket 连接成功</p>';
+            ws.close();
+        };
+        
+        ws.onerror = function(error) {
+            results.innerHTML += '<p>❌ WebSocket 连接失败: ' + error + '</p>';
+        };
+        
+        ws.onclose = function(event) {
+            results.innerHTML += '<p>WebSocket 连接关闭: code=' + event.code + ', reason=' + event.reason + '</p>';
+        };
+    </script>
+</body>
+</html>

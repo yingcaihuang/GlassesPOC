@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ScriptProcessor Debug Test</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            background: white;
+            padding: 20px;
+            border-radius: 10px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        button {
+            background: #007bff;
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 16px;
+            margin: 10px;
+        }
+        button:hover {
+            background: #0056b3;
+        }
+        button:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+        .status {
+            margin: 10px 0;
+            padding: 10px;
+            border-radius: 5px;
+            background: #e9ecef;
+        }
+        .log {
+            background: #f8f9fa;
+            border: 1px solid #dee2e6;
+            border-radius: 5px;
+            padding: 10px;
+            margin: 10px 0;
+            max-height: 300px;
+            overflow-y: auto;
+            font-family: monospace;
+            font-size: 12px;
+        }
+        .audio-level {
+            width: 100%;
+            height: 20px;
+            background: #e9ecef;
+            border-radius: 10px;
+            overflow: hidden;
+            margin: 10px 0;
+        }
+        .audio-level-bar {
+            height: 100%;
+            background: linear-gradient(to right, #28a745, #ffc107, #dc3545);
+            width: 0%;
+            transition: width 0.1s;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>ScriptProcessor Debug Test</h1>
+        <p>这个页面用于测试ScriptProcessor是否正常工作</p>
+        
+        <button id="startBtn">开始测试</button>
+        <button id="stopBtn" disabled>停止测试</button>
+        
+        <div class="status" id="status">点击开始测试按钮</div>
+        
+        <div>
+            <h3>音频电平</h3>
+            <div class="audio-level">
+                <div class="audio-level-bar" id="audioLevelBar"></div>
+            </div>
+            <span id="audioLevelText">0%</span>
+        </div>
+        
+        <div>
+            <h3>调试日志</h3>
+            <div class="log" id="log"></div>
+        </div>
+    </div>
+
+    <script>
+        let audioContext = null;
+        let mediaStream = null;
+        let scriptProcessor = null;
+        let analyser = null;
+        let isRecording = false;
+        let processCount = 0;
+
+        const startBtn = document.getElementById('startBtn');
+        const stopBtn = document.getElementById('stopBtn');
+        const status = document.getElementById('status');
+        const log = document.getElementById('log');
+        const audioLevelBar = document.getElementById('audioLevelBar');
+        const audioLevelText = document.getElementById('audioLevelText');
+
+        function addLog(message) {
+            const timestamp = new Date().toLocaleTimeString();
+            log.innerHTML += `[${timestamp}] ${message}\n`;
+            log.scrollTop = log.scrollHeight;
+            console.log(message);
+        }
+
+        async function startTest() {
+            try {
+                addLog('🎤 请求麦克风权限...');
+                
+                // 获取麦克风权限
+                mediaStream = await navigator.mediaDevices.getUserMedia({
+                    audio: {
+                        sampleRate: 24000,
+                        channelCount: 1,
+                        echoCancellation: true,
+                        noiseSuppression: true,
+                        autoGainControl: true
+                    }
+                });
+                
+                addLog('✅ 麦克风权限获取成功');
+                
+                // 创建AudioContext
+                audioContext = new AudioContext({
+                    sampleRate: 24000,
+                    latencyHint: 'interactive'
+                });
+                
+                addLog(`🎵 AudioContext创建成功，状态: ${audioContext.state}`);
+                
+                // 如果AudioContext被暂停，尝试恢复
+                if (audioContext.state === 'suspended') {
+                    addLog('⚠️ AudioContext被暂停，尝试恢复...');
+                    await audioContext.resume();
+                    addLog(`✅ AudioContext恢复，新状态: ${audioContext.state}`);
+                }
+                
+                // 创建音频节点
+                const source = audioContext.createMediaStreamSource(mediaStream);
+                const gainNode = audioContext.createGain();
+                analyser = audioContext.createAnalyser();
+                scriptProcessor = audioContext.createScriptProcessor(4096, 1, 1);
+                
+                addLog('🔗 音频节点创建成功');
+                
+                // 连接音频链
+                source.connect(gainNode);
+                gainNode.connect(scriptProcessor);
+                scriptProcessor.connect(analyser);
+                analyser.connect(audioContext.destination);
+                
+                addLog('🔗 音频链连接: source → gain → scriptProcessor → analyser → destination');
+                
+                // 设置分析器
+                analyser.fftSize = 2048;
+                analyser.smoothingTimeConstant = 0.8;
+                
+                // 重置计数器
+                processCount = 0;
+                isRecording = true;
+                
+                // 设置ScriptProcessor回调
+                scriptProcessor.onaudioprocess = (event) => {
+                    if (!isRecording) return;
+                    
+                    processCount++;
+                    
+                    const inputBuffer = event.inputBuffer;
+                    const inputData = inputBuffer.getChannelData(0);
+                    
+                    // 计算音频电平
+                    let sum = 0;
+                    for (let i = 0; i < inputData.length; i++) {
+                        sum += Math.abs(inputData[i]);
+                    }
+                    const average = sum / inputData.length;
+                    const level = Math.min(100, average * 1000); // 放大显示
+                    
+                    // 更新UI
+                    audioLevelBar.style.width = `${level}%`;
+                    audioLevelText.textContent = `${level.toFixed(1)}%`;
+                    
+                    // 每50次处理打印一次日志
+                    if (processCount % 50 === 0) {
+                        addLog(`🎯 ScriptProcessor处理: 第${processCount}次, 样本数: ${inputData.length}, 音频电平: ${level.toFixed(2)}%`);
+                    }
+                    
+                    // 检查是否有音频信号
+                    if (level > 1 && processCount % 10 === 0) {
+                        addLog(`🔊 检测到音频信号: ${level.toFixed(2)}%`);
+                    }
+                };
+                
+                addLog('✅ ScriptProcessor回调设置完成');
+                addLog('🎤 开始录音测试...');
+                
+                // 更新UI
+                startBtn.disabled = true;
+                stopBtn.disabled = false;
+                status.textContent = '正在录音测试中...';
+                
+                // 开始音频可视化
+                startVisualization();
+                
+            } catch (error) {
+                addLog(`❌ 错误: ${error.message}`);
+                status.textContent = `错误: ${error.message}`;
+            }
+        }
+
+        function stopTest() {
+            isRecording = false;
+            
+            if (mediaStream) {
+                mediaStream.getTracks().forEach(track => track.stop());
+                mediaStream = null;
+                addLog('🛑 媒体流已停止');
+            }
+            
+            if (audioContext && audioContext.state !== 'closed') {
+                audioContext.close();
+                audioContext = null;
+                addLog('🛑 AudioContext已关闭');
+            }
+            
+            // 重置UI
+            startBtn.disabled = false;
+            stopBtn.disabled = true;
+            status.textContent = '测试已停止';
+            audioLevelBar.style.width = '0%';
+            audioLevelText.textContent = '0%';
+            
+            addLog(`📊 测试完成，总共处理了 ${processCount} 次音频数据`);
+        }
+
+        function startVisualization() {
+            if (!analyser || !isRecording) return;
+            
+            const dataArray = new Uint8Array(analyser.frequencyBinCount);
+            
+            function draw() {
+                if (!isRecording || !analyser) return;
+                
+                analyser.getByteFrequencyData(dataArray);
+                
+                // 计算平均音频电平
+                const average = dataArray.reduce((a, b) => a + b) / dataArray.length;
+                const level = (average / 255) * 100;
+                
+                // 更新可视化（这里简化处理，主要用ScriptProcessor的数据）
+                
+                requestAnimationFrame(draw);
+            }
+            
+            draw();
+        }
+
+        // 事件监听器
+        startBtn.addEventListener('click', startTest);
+        stopBtn.addEventListener('click', stopTest);
+
+        // 页面加载完成
+        addLog('📱 页面加载完成，准备开始测试');
+        addLog('💡 提示：请确保允许麦克风权限，并在安静环境中测试');
+    </script>
+</body>
+</html>

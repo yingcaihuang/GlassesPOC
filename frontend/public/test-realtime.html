@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Realtime WebSocket 测试</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        .status { padding: 10px; margin: 10px 0; border-radius: 5px; }
+        .success { background-color: #d4edda; color: #155724; }
+        .error { background-color: #f8d7da; color: #721c24; }
+        .warning { background-color: #fff3cd; color: #856404; }
+        button { padding: 10px 20px; margin: 5px; }
+        #log { background: #f8f9fa; padding: 10px; height: 300px; overflow-y: auto; border: 1px solid #ddd; }
+    </style>
+</head>
+<body>
+    <h1>GPT Realtime WebSocket 连接测试</h1>
+    
+    <div id="status" class="status warning">准备测试...</div>
+    
+    <div>
+        <button onclick="testHealthCheck()">测试健康检查</button>
+        <button onclick="testLogin()">测试登录</button>
+        <button onclick="testWebSocket()">测试 WebSocket</button>
+        <button onclick="clearLog()">清空日志</button>
+    </div>
+    
+    <h3>测试日志:</h3>
+    <div id="log"></div>
+    
+    <script>
+        let testToken = null;
+        
+        function log(message, type = 'info') {
+            const logDiv = document.getElementById('log');
+            const timestamp = new Date().toLocaleTimeString();
+            const color = type === 'error' ? 'red' : type === 'success' ? 'green' : 'black';
+            logDiv.innerHTML += `<div style="color: ${color}">[${timestamp}] ${message}</div>`;
+            logDiv.scrollTop = logDiv.scrollHeight;
+        }
+        
+        function updateStatus(message, type) {
+            const statusDiv = document.getElementById('status');
+            statusDiv.textContent = message;
+            statusDiv.className = `status ${type}`;
+        }
+        
+        async function testHealthCheck() {
+            log('测试健康检查...');
+            try {
+                const response = await fetch('/health');
+                const data = await response.json();
+                log('健康检查成功: ' + JSON.stringify(data), 'success');
+                updateStatus('健康检查通过', 'success');
+            } catch (error) {
+                log('健康检查失败: ' + error.message, 'error');
+                updateStatus('健康检查失败', 'error');
+            }
+        }
+        
+        async function testLogin() {
+            log('测试登录...');
+            try {
+                const response = await fetch('/api/v1/auth/login', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        email: 'betty@123.com',
+                        password: 'Betty@123.com'
+                    })
+                });
+                
+                if (response.ok) {
+                    const data = await response.json();
+                    testToken = data.token;
+                    log('登录成功，获得 token: ' + testToken.substring(0, 20) + '...', 'success');
+                    updateStatus('登录成功', 'success');
+                } else {
+                    const errorData = await response.json();
+                    log('登录失败: ' + JSON.stringify(errorData), 'error');
+                    updateStatus('登录失败', 'error');
+                }
+            } catch (error) {
+                log('登录请求失败: ' + error.message, 'error');
+                updateStatus('登录请求失败', 'error');
+            }
+        }
+        
+        function testWebSocket() {
+            if (!testToken) {
+                log('请先登录获取 token', 'error');
+                return;
+            }
+            
+            log('测试 WebSocket 连接...');
+            
+            // Try multiple WebSocket URLs to debug connection issues
+            const wsUrls = [
+                `ws://localhost:3000/api/v1/realtime/chat?token=${testToken}`,
+                `ws://${window.location.host}/api/v1/realtime/chat?token=${testToken}`,
+                `ws://localhost:8080/api/v1/realtime/chat?token=${testToken}`
+            ];
+            
+            let currentUrlIndex = 0;
+            
+            function tryNextUrl() {
+                if (currentUrlIndex >= wsUrls.length) {
+                    log('所有 WebSocket URL 都尝试失败', 'error');
+                    updateStatus('WebSocket 连接失败', 'error');
+                    return;
+                }
+                
+                const wsUrl = wsUrls[currentUrlIndex];
+                log(`尝试连接 URL ${currentUrlIndex + 1}: ${wsUrl}`);
+                
+                const ws = new WebSocket(wsUrl);
+                let connectionTimeout;
+                
+                // Set connection timeout
+                connectionTimeout = setTimeout(() => {
+                    log(`连接超时 (URL ${currentUrlIndex + 1})`, 'error');
+                    ws.close();
+                    currentUrlIndex++;
+                    tryNextUrl();
+                }, 10000); // 10 second timeout
+                
+                ws.onopen = function() {
+                    clearTimeout(connectionTimeout);
+                    log(`WebSocket 连接成功！(URL ${currentUrlIndex + 1})`, 'success');
+                    updateStatus('WebSocket 连接成功', 'success');
+                    
+                    // 发送测试消息
+                    const testMessage = {
+                        type: 'test',
+                        message: 'Hello from browser test!',
+                        timestamp: Date.now()
+                    };
+                    
+                    ws.send(JSON.stringify(testMessage));
+                    log('发送测试消息: ' + JSON.stringify(testMessage));
+                    
+                    // 5秒后关闭连接
+                    setTimeout(() => {
+                        ws.close(1000, 'Test completed');
+                        log('主动关闭 WebSocket 连接');
+                    }, 5000);
+                };
+                
+                ws.onmessage = function(event) {
+                    log('收到消息: ' + event.data, 'success');
+                    try {
+                        const data = JSON.parse(event.data);
+                        log('解析后的消息: ' + JSON.stringify(data, null, 2), 'success');
+                    } catch (e) {
+                        log('消息不是有效的 JSON: ' + event.data, 'success');
+                    }
+                };
+                
+                ws.onerror = function(error) {
+                    clearTimeout(connectionTimeout);
+                    log(`WebSocket 错误 (URL ${currentUrlIndex + 1}): ${error}`, 'error');
+                    log('错误详情: ' + JSON.stringify(error), 'error');
+                    currentUrlIndex++;
+                    setTimeout(tryNextUrl, 1000); // Wait 1 second before trying next URL
+                };
+                
+                ws.onclose = function(event) {
+                    clearTimeout(connectionTimeout);
+                    log(`WebSocket 连接关闭 (URL ${currentUrlIndex + 1}): code=${event.code}, reason=${event.reason || 'none'}`);
+                    
+                    if (event.code === 1000) {
+                        updateStatus('WebSocket 正常关闭', 'success');
+                    } else if (event.code === 1006) {
+                        log('连接异常关闭，可能是网络问题或服务器问题', 'error');
+                        if (currentUrlIndex < wsUrls.length - 1) {
+                            currentUrlIndex++;
+                            setTimeout(tryNextUrl, 1000);
+                        } else {
+                            updateStatus('WebSocket 异常关闭', 'error');
+                        }
+                    } else {
+                        updateStatus('WebSocket 异常关闭', 'error');
+                    }
+                };
+            }
+            
+            // Start trying URLs
+            tryNextUrl();
+        }
+        
+        function clearLog() {
+            document.getElementById('log').innerHTML = '';
+        }
+        
+        // 页面加载时自动测试健康检查
+        window.onload = function() {
+            testHealthCheck();
+        };
+    </script>
+</body>
+</html>
