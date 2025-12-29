@@ -8,6 +8,29 @@ echo "Current user: $(whoami)"
 echo "Current directory: $(pwd)"
 echo "Time: $(date)"
 
+# Check if we have environment variables, if not, try to load from deployment.env or existing .env
+if [ -z "$AZURE_OPENAI_ENDPOINT" ] && [ -f "/tmp/glass/deployment.env" ]; then
+    echo "Loading environment variables from deployment.env..."
+    source /tmp/glass/deployment.env
+    echo "Environment variables loaded from deployment.env"
+elif [ -z "$AZURE_OPENAI_ENDPOINT" ] && [ -f "/tmp/glass/.env" ]; then
+    echo "Loading environment variables from existing .env file..."
+    source /tmp/glass/.env
+    echo "Environment variables loaded from .env"
+elif [ -z "$AZURE_OPENAI_ENDPOINT" ] && [ -f "/home/azureuser/smart-glasses-app/.env" ]; then
+    echo "Loading environment variables from old .env file..."
+    source /home/azureuser/smart-glasses-app/.env
+    echo "Environment variables loaded from old .env file"
+elif [ -z "$AZURE_OPENAI_ENDPOINT" ]; then
+    echo "No environment variables found, using minimal defaults for testing..."
+    export CONTAINER_REGISTRY="smartglassesacr"
+    export IMAGE_NAME="smart-glasses-app"
+    export IMAGE_TAG="latest"
+    export POSTGRES_PASSWORD="smartglasses123"
+    export JWT_SECRET_KEY="default-jwt-secret-key-change-in-production"
+    echo "WARNING: Using default values - please configure proper environment variables for production"
+fi
+
 # Ensure Docker service is running
 echo "Starting Docker service..."
 sudo systemctl start docker
