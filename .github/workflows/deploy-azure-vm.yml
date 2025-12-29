@@ -184,21 +184,28 @@ jobs:
         
         echo "🚀 Starting deployment on Azure VM..."
         
-        # Start Docker service if not running
-        if ! systemctl is-active --quiet docker; then
-            echo "Starting Docker service..."
-            sudo systemctl start docker
-            sudo systemctl enable docker
+        # Ensure we're running as root for system operations
+        if [ "$EUID" -ne 0 ]; then
+            echo "Switching to root for system operations..."
+            exec sudo "$0" "$@"
         fi
         
-        # Add current user to docker group if not already
-        if ! groups $USER | grep -q docker; then
-            echo "Adding user to docker group..."
-            sudo usermod -aG docker $USER
-        fi
+        # Start Docker service
+        echo "Ensuring Docker service is running..."
+        systemctl start docker || true
+        systemctl enable docker || true
         
-        # Ensure Docker socket permissions
-        sudo chmod 666 /var/run/docker.sock || true
+        # Add azureuser to docker group
+        echo "Adding azureuser to docker group..."
+        usermod -aG docker azureuser || true
+        
+        # Set Docker socket permissions
+        echo "Setting Docker socket permissions..."
+        chmod 666 /var/run/docker.sock || true
+        
+        # Switch to azureuser for Docker operations
+        echo "Switching to azureuser for application deployment..."
+        su - azureuser << 'USEREOF'
         
         # Wait for Docker to be ready
         echo "Waiting for Docker to be ready..."
@@ -215,8 +222,6 @@ jobs:
         # Verify Docker is working
         if ! docker info >/dev/null 2>&1; then
             echo "❌ Docker is not working properly"
-            echo "Docker service status:"
-            sudo systemctl status docker
             exit 1
         fi
         
@@ -366,6 +371,10 @@ jobs:
         done
         
         echo "✅ Deployment completed successfully!"
+        
+        USEREOF
+        
+        echo "✅ VM deployment script completed!"
         EOF
         
         chmod +x deploy-script.sh
