@@ -23,11 +23,34 @@ sudo chmod 666 /var/run/docker.sock
 
 # 切换到 azureuser 执行部署
 echo "🔄 切换到 azureuser 执行部署..."
-sudo -u azureuser bash -c '
+sudo -u azureuser bash -c "
 set -e
 
-echo "👤 现在运行用户: $(whoami)"
-echo "📁 当前目录: $(pwd)"
+# 加载环境变量文件
+if [ -f '/tmp/glass/deployment.env' ]; then
+    echo '📝 加载环境变量文件...'
+    source /tmp/glass/deployment.env
+    echo '✅ 环境变量文件已加载'
+else
+    echo '⚠️  环境变量文件不存在，使用传递的环境变量'
+    # 重新导出所有环境变量
+    export CONTAINER_REGISTRY='${CONTAINER_REGISTRY}'
+    export IMAGE_NAME='${IMAGE_NAME}'
+    export IMAGE_TAG='${IMAGE_TAG}'
+    export AZURE_OPENAI_ENDPOINT='${AZURE_OPENAI_ENDPOINT}'
+    export AZURE_OPENAI_API_KEY='${AZURE_OPENAI_API_KEY}'
+    export AZURE_OPENAI_DEPLOYMENT_NAME='${AZURE_OPENAI_DEPLOYMENT_NAME}'
+    export AZURE_OPENAI_API_VERSION='${AZURE_OPENAI_API_VERSION}'
+    export AZURE_OPENAI_REALTIME_ENDPOINT='${AZURE_OPENAI_REALTIME_ENDPOINT}'
+    export AZURE_OPENAI_REALTIME_API_KEY='${AZURE_OPENAI_REALTIME_API_KEY}'
+    export AZURE_OPENAI_REALTIME_DEPLOYMENT_NAME='${AZURE_OPENAI_REALTIME_DEPLOYMENT_NAME}'
+    export AZURE_OPENAI_REALTIME_API_VERSION='${AZURE_OPENAI_REALTIME_API_VERSION}'
+    export POSTGRES_PASSWORD='${POSTGRES_PASSWORD}'
+    export JWT_SECRET_KEY='${JWT_SECRET_KEY}'
+fi
+
+echo \"👤 现在运行用户: \$(whoami)\"
+echo \"📁 当前目录: \$(pwd)\"
 
 # 设置工作目录
 mkdir -p /tmp/glass
@@ -519,7 +542,7 @@ docker-compose exec -T postgres psql -U smartglasses -d smart_glasses -c "SELECT
 echo "📜 显示应用日志:"
 docker-compose logs --tail=20 app
 
-echo "✅ 部署完成!"
-'
+echo \"✅ 部署完成!\"
+"
 
 echo "✅ VM 简化部署脚本完成!"
