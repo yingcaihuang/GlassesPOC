@@ -13,5 +13,6 @@ export default defineConfig({
       },
     },
   },
+  publicDir: 'public', // 确保public目录被复制
 })
 
