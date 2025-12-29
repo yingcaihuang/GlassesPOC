@@ -241,6 +241,29 @@ func (h *RealtimeHandler) handleGPTMode(conn *websocket.Conn, gptConn *websocket
 				})
 			}
 			
+		case "stop_listening":
+			// 处理停止监听信号
+			log.Printf("Received stop_listening signal from user: %s", userID)
+			
+			// 发送清空音频缓冲区信号到GPT API
+			stopMessage := map[string]interface{}{
+				"type": "input_audio_buffer.clear",
+			}
+			
+			if err := gptConn.WriteJSON(stopMessage); err != nil {
+				log.Printf("Failed to send clear buffer signal to GPT API: %v", err)
+			} else {
+				log.Printf("Sent clear buffer signal to GPT API for user: %s", userID)
+			}
+			
+			// 回复确认消息
+			response := map[string]interface{}{
+				"type": "stop_confirmed",
+				"timestamp": time.Now().Unix(),
+				"message": "停止监听信号已处理",
+			}
+			err = conn.WriteJSON(response)
+			
 		case "test":
 			// 测试消息 - 回显
 			response := map[string]interface{}{

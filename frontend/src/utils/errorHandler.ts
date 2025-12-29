@@ -323,19 +323,32 @@ export const handleAudioPlayback = async (audioData: string): Promise<void> => {
       
       // Convert PCM16 bytes to Float32 samples
       const pcm16Data = new Int16Array(arrayBuffer)
-      const sampleCount = pcm16Data.length
+      const originalSampleCount = pcm16Data.length
       
-      if (sampleCount === 0) {
+      if (originalSampleCount === 0) {
         console.warn('Empty audio data received, skipping playback')
         return
       }
       
-      const audioBuffer = globalAudioContext.createBuffer(1, sampleCount, 24000) // mono, 24kHz
+      // 添加静音填充以减少爆破音（开头和结尾各添加240个样本，约10ms）
+      const paddingSamples = 240 // 10ms at 24kHz
+      const totalSampleCount = originalSampleCount + (paddingSamples * 2)
+      const audioBuffer = globalAudioContext.createBuffer(1, totalSampleCount, 24000) // mono, 24kHz
       const channelData = audioBuffer.getChannelData(0)
       
+      // 开头静音填充
+      for (let i = 0; i < paddingSamples; i++) {
+        channelData[i] = 0
+      }
+      
       // Convert PCM16 to Float32 (-1 to 1 range) with better precision
-      for (let i = 0; i < sampleCount; i++) {
-        channelData[i] = Math.max(-1, Math.min(1, pcm16Data[i] / 32768.0))
+      for (let i = 0; i < originalSampleCount; i++) {
+        channelData[i + paddingSamples] = Math.max(-1, Math.min(1, pcm16Data[i] / 32768.0))
+      }
+      
+      // 结尾静音填充
+      for (let i = originalSampleCount + paddingSamples; i < totalSampleCount; i++) {
+        channelData[i] = 0
       }
       
       // 创建音频源并播放
@@ -352,6 +365,19 @@ export const handleAudioPlayback = async (audioData: string): Promise<void> => {
       filterNode.frequency.value = 8000 // 8kHz低通滤波，去除高频噪音
       filterNode.Q.value = 1
       
+      // 添加淡入淡出效果避免爆破音
+      const fadeTime = 0.01 // 10ms淡入淡出
+      const currentTime = globalAudioContext.currentTime
+      
+      // 淡入效果
+      gainNode.gain.setValueAtTime(0, currentTime)
+      gainNode.gain.linearRampToValueAtTime(0.7, currentTime + fadeTime)
+      
+      // 淡出效果（在音频结束前）
+      const audioEndTime = currentTime + audioBuffer.duration
+      gainNode.gain.setValueAtTime(0.7, audioEndTime - fadeTime)
+      gainNode.gain.linearRampToValueAtTime(0, audioEndTime)
+      
       source.connect(filterNode)
       filterNode.connect(gainNode)
       gainNode.connect(globalAudioContext.destination)
@@ -366,7 +392,7 @@ export const handleAudioPlayback = async (audioData: string): Promise<void> => {
         
         try {
           source.start()
-          console.log(`🔊 Playing GPT audio: ${sampleCount} samples, ${audioBuffer.duration.toFixed(2)}s`)
+          console.log(`🔊 Playing GPT audio: ${originalSampleCount} samples (${totalSampleCount} with padding), ${audioBuffer.duration.toFixed(2)}s`)
           
           // 设置超时以防音频卡住
           setTimeout(() => {

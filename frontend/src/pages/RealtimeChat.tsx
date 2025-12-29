@@ -137,18 +137,22 @@ export default function RealtimeChat() {
     switch (data.type) {
       case 'connection_established':
         console.log('WebSocket connection established:', data)
-        // Connection is ready, no additional action needed
         break
         
       case 'text_response':
+        // 总是处理文本响应，让用户看到AI的回复
         if (data.text) {
           addMessage('assistant', data.text)
         }
         break
         
       case 'audio_response':
+        // 总是处理音频响应，让用户听到AI的回复
+        console.log('Received audio_response:', data.audio ? `${data.audio.length} chars` : 'no audio data')
         if (data.audio) {
           playAudioResponse(data.audio)
+        } else {
+          console.warn('audio_response message has no audio data:', data)
         }
         break
         
@@ -167,8 +171,12 @@ export default function RealtimeChat() {
         break
         
       case 'error':
-        setError('处理错误: ' + JSON.stringify(data.error))
+        const errorMessage = data.error ? 
+          (typeof data.error === 'string' ? data.error : JSON.stringify(data.error)) : 
+          '未知错误'
+        setError('处理错误: ' + errorMessage)
         setIsProcessing(false)
+        console.error('WebSocket error message:', data)
         break
         
       case 'echo':
@@ -183,8 +191,10 @@ export default function RealtimeChat() {
   // Enhanced audio response playback with visual feedback
   const playAudioResponse = useCallback(async (audioData: string) => {
     try {
+      console.log('Starting audio playback:', audioData.length, 'characters')
       setIsAudioPlaying(true)
       await handleAudioPlayback(audioData)
+      console.log('Audio playback completed successfully')
     } catch (err) {
       console.error('Failed to play audio response:', err)
     } finally {
@@ -475,6 +485,15 @@ export default function RealtimeChat() {
     // 停止音频处理
     audioChunksRef.current.isProcessing = false
     
+    // 发送停止信号给后端
+    if (websocketRef.current && websocketRef.current.readyState === WebSocket.OPEN) {
+      websocketRef.current.send(JSON.stringify({
+        type: 'stop_listening',
+        timestamp: Date.now()
+      }))
+      console.log('发送停止监听信号给后端')
+    }
+    
     if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
       mediaRecorderRef.current.stop()
     }
@@ -488,7 +507,7 @@ export default function RealtimeChat() {
     // 处理剩余的原始音频数据
     setTimeout(() => {
       if (audioChunksRef.current.rawAudioData && audioChunksRef.current.rawAudioData.length > 0) {
-        console.log(`Processing remaining raw audio chunks: ${audioChunksRef.current.rawAudioData.length}`)
+        console.log(`处理剩余音频块: ${audioChunksRef.current.rawAudioData.length}`)
         
         // 合并剩余的音频数据
         const totalSamples = audioChunksRef.current.rawAudioData.reduce((sum, chunk) => sum + chunk.length, 0)

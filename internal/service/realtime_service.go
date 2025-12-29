@@ -300,12 +300,16 @@ func (s *RealtimeService) HandleRealtimeResponse(gptConn *websocket.Conn, client
 		case "response.audio.delta":
 			// Requirement 5.1 - 转发音频响应到客户端
 			if audioData, ok := response["delta"].(string); ok {
+				log.Printf("Sending audio response to client: %d bytes", len(audioData))
 				clientMsg := map[string]interface{}{
 					"type":      "audio_response",
 					"audio":     audioData,
 					"timestamp": time.Now().UnixMilli(),
 				}
 				s.sendToClientWithTimeout(clientConn, clientMsg)
+				log.Printf("Audio response sent to client successfully")
+			} else {
+				log.Printf("No audio data in response.audio.delta: %v", response)
 			}
 
 		case "response.text.delta":
@@ -386,12 +390,20 @@ func (s *RealtimeService) HandleRealtimeResponse(gptConn *websocket.Conn, client
 // sendToClientWithTimeout 带超时的客户端消息发送
 func (s *RealtimeService) sendToClientWithTimeout(clientConn *websocket.Conn, message interface{}) {
 	if clientConn == nil {
+		log.Printf("Cannot send message: client connection is nil")
 		return
 	}
 
 	// 记录WebSocket消息性能 (Requirements: 9.2)
 	messageStart := time.Now()
 	sessionID := fmt.Sprintf("conn_%p", clientConn)
+
+	// 记录发送的消息类型
+	if msgMap, ok := message.(map[string]interface{}); ok {
+		if msgType, ok := msgMap["type"].(string); ok {
+			log.Printf("Sending message to client: type=%s", msgType)
+		}
+	}
 
 	clientConn.SetWriteDeadline(time.Now().Add(2 * time.Second))
 	err := clientConn.WriteJSON(message)
@@ -404,6 +416,8 @@ func (s *RealtimeService) sendToClientWithTimeout(clientConn *websocket.Conn, me
 
 	if err != nil {
 		log.Printf("Error sending message to client: %v", err)
+	} else {
+		log.Printf("Message sent to client successfully in %v", messageLatency)
 	}
 }
 
