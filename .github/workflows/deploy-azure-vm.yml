@@ -102,32 +102,17 @@ jobs:
             --command-id RunShellScript \
             --scripts "
               # Start Docker service if not running
-              if ! systemctl is-active --quiet docker; then
-                echo 'Starting Docker service...'
-                sudo systemctl start docker
-                sudo systemctl enable docker
-              fi
+              sudo systemctl start docker
+              sudo systemctl enable docker
               
               # Add user to docker group if not already
-              sudo usermod -aG docker azureuser || true
+              sudo usermod -aG docker azureuser
               
               # Set Docker socket permissions
-              sudo chmod 666 /var/run/docker.sock || true
+              sudo chmod 666 /var/run/docker.sock
               
-              # Wait for Docker to be ready
-              for i in {1..10}; do
-                if docker info >/dev/null 2>&1; then
-                  echo 'Docker is ready'
-                  break
-                else
-                  echo 'Waiting for Docker...'
-                  sleep 3
-                fi
-              done
-              
-              echo 'Docker status:'
-              docker --version
-              docker info
+              # Test Docker access for azureuser
+              sudo -u azureuser docker info >/dev/null 2>&1 && echo 'Docker access OK' || echo 'Docker access failed'
             " || echo "Warning: Docker configuration may need manual attention"
           
         else
@@ -184,67 +169,29 @@ jobs:
         
         echo "🚀 Starting deployment on Azure VM..."
         
-        # Ensure we're running as root for system operations
-        if [ "$EUID" -ne 0 ]; then
-            echo "Re-executing as root..."
-            exec sudo "$0" "$@"
-        fi
-        
-        # Start Docker service
-        echo "Ensuring Docker service is running..."
-        systemctl start docker || true
-        systemctl enable docker || true
-        
-        # Add azureuser to docker group
-        echo "Adding azureuser to docker group..."
-        usermod -aG docker azureuser || true
-        
-        # Set Docker socket permissions
-        echo "Setting Docker socket permissions..."
-        chmod 666 /var/run/docker.sock || true
-        
-        # Create application directory
-        echo "Creating application directory..."
-        mkdir -p /home/azureuser/smart-glasses-app
-        chown azureuser:azureuser /home/azureuser/smart-glasses-app
-        
         # Switch to azureuser and execute deployment
-        echo "Executing deployment as azureuser..."
         sudo -u azureuser bash << 'USEREOF'
         
         # Set working directory
-        cd /home/azureuser/smart-glasses-app
+        cd /home/azureuser
+        
+        # Create application directory if it doesn't exist
+        mkdir -p smart-glasses-app
+        cd smart-glasses-app
         
         # Wait for Docker to be ready
-        echo "Waiting for Docker to be ready..."
-        for i in {1..30}; do
-            if docker info >/dev/null 2>&1; then
-                echo "Docker is ready"
-                break
-            else
-                echo "Waiting for Docker... (attempt $i/30)"
-                sleep 2
-            fi
-        done
-        
-        # Verify Docker is working
+        echo "Checking Docker access..."
         if ! docker info >/dev/null 2>&1; then
-            echo "❌ Docker is not working properly"
+            echo "❌ Docker is not accessible for azureuser"
             exit 1
         fi
-        
-        # Install Docker Compose if not exists
-        if ! command -v docker-compose &> /dev/null; then
-          echo "Installing Docker Compose..."
-          sudo curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
-          sudo chmod +x /usr/local/bin/docker-compose
-        fi
+        echo "✅ Docker is accessible"
         
         # Login to ACR
         echo "Logging into Azure Container Registry..."
         echo "$ACR_PASSWORD" | docker login ${{ env.CONTAINER_REGISTRY }}.azurecr.io --username ${{ env.CONTAINER_REGISTRY }} --password-stdin
         
-        # Create docker-compose.yml for production
+        # Create docker-compose.yml
         echo "Creating docker-compose.yml..."
         cat > docker-compose.yml << 'COMPOSE_EOF'
         services:
@@ -339,49 +286,31 @@ jobs:
         JWT_SECRET_KEY=$JWT_SECRET_KEY
         ENV_EOF
         
-        # Stop existing services gracefully
+        # Stop existing services
         echo "Stopping existing services..."
-        docker-compose down --remove-orphans || true
-        
-        # Clean up old containers and images
-        echo "Cleaning up old containers..."
-        docker container prune -f || true
-        docker image prune -f || true
+        docker-compose down || true
         
         # Pull latest images
         echo "Pulling latest images..."
         docker-compose pull
         
-        # Start services
-        echo "Starting services..."
+        # Start services (exactly like your manual test)
+        echo "Starting services with docker-compose up -d..."
         docker-compose up -d
         
-        # Wait for services to start
+        # Wait a moment for services to start
         echo "Waiting for services to start..."
-        sleep 30
+        sleep 10
         
-        # Check service status
+        # Check status
         echo "Checking service status..."
         docker-compose ps
         
         # Show logs for debugging
-        echo "Showing recent logs..."
-        docker-compose logs --tail=20
+        echo "Recent logs:"
+        docker-compose logs --tail=10
         
-        # Verify services are healthy
-        echo "Verifying service health..."
-        for i in {1..10}; do
-          RUNNING_CONTAINERS=$(docker-compose ps --services --filter "status=running" | wc -l)
-          if [ "$RUNNING_CONTAINERS" -gt 0 ]; then
-            echo "Found $RUNNING_CONTAINERS running containers"
-            break
-          else
-            echo "Waiting for services to be ready... (attempt $i/10)"
-            sleep 5
-          fi
-        done
-        
-        echo "✅ Deployment completed successfully!"
+        echo "✅ Deployment completed!"
         
         USEREOF
         
