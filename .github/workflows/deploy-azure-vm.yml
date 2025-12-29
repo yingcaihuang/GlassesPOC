@@ -94,27 +94,6 @@ jobs:
             sleep 30
           fi
           
-          # Ensure Docker is running on existing VM
-          echo "Ensuring Docker is properly configured on existing VM..."
-          az vm run-command invoke \
-            --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
-            --name ${{ env.VM_NAME }} \
-            --command-id RunShellScript \
-            --scripts "
-              # Start Docker service if not running
-              sudo systemctl start docker
-              sudo systemctl enable docker
-              
-              # Add user to docker group if not already
-              sudo usermod -aG docker azureuser
-              
-              # Set Docker socket permissions
-              sudo chmod 666 /var/run/docker.sock
-              
-              # Test Docker access for azureuser
-              sudo -u azureuser docker info >/dev/null 2>&1 && echo 'Docker access OK' || echo 'Docker access failed'
-            " || echo "Warning: Docker configuration may need manual attention"
-          
         else
           echo "Creating new Virtual Machine '${{ env.VM_NAME }}'..."
           
@@ -161,333 +140,44 @@ jobs:
         echo "VM_IP=$VM_IP" >> $GITHUB_OUTPUT
         echo "VM Public IP: $VM_IP"
 
-    - name: Create deployment script
+    - name: Upload deployment files to VM
       run: |
-        cat > deploy-script.sh << 'EOF'
-        #!/bin/bash
-        set -e
-        
-        echo "🚀 Starting deployment on Azure VM..."
-        echo "📍 Script execution info:"
-        echo "   - Current user: $(whoami)"
-        echo "   - Current directory: $(pwd)"
-        echo "   - Home directory: $HOME"
-        echo "   - Script running as: $(id)"
-        
-        # Switch to azureuser and execute deployment
-        echo "🔄 Switching to azureuser for deployment..."
-        sudo -u azureuser bash << 'USEREOF'
-        
-        echo "👤 Now running as user: $(whoami)"
-        echo "📁 Current directory: $(pwd)"
-        echo "🏠 Home directory: $HOME"
-        echo "🆔 User ID info: $(id)"
-        
-        # Set working directory
-        echo "📂 Changing to home directory..."
-        cd /home/azureuser
-        echo "📍 Current working directory: $(pwd)"
-        
-        # Create application directory if it doesn't exist
-        echo "📁 Creating application directory..."
-        mkdir -p smart-glasses-app
-        cd smart-glasses-app
-        echo "📍 Application directory: $(pwd)"
-        echo "📋 Directory contents before deployment:"
-        ls -la || echo "Directory is empty"
-        
-        # Wait for Docker to be ready
-        echo "🐳 Checking Docker access..."
-        if ! docker info >/dev/null 2>&1; then
-            echo "❌ Docker is not accessible for azureuser"
-            echo "🔍 Docker service status:"
-            sudo systemctl status docker --no-pager || true
-            echo "🔍 Docker socket permissions:"
-            ls -la /var/run/docker.sock || true
-            echo "🔍 User groups:"
-            groups
-            exit 1
-        fi
-        echo "✅ Docker is accessible for user $(whoami)"
-        
-        # Login to ACR
-        echo "🔐 Logging into Azure Container Registry..."
-        echo "   - Registry: \$CONTAINER_REGISTRY.azurecr.io"
-        echo "   - Username: \$CONTAINER_REGISTRY"
-        echo "\$ACR_PASSWORD" | docker login \$CONTAINER_REGISTRY.azurecr.io --username \$CONTAINER_REGISTRY --password-stdin
-        echo "✅ ACR login successful"
-        
-        # Create migrations directory and copy SQL files
-        echo "📁 Creating migrations directory in: $(pwd)/migrations"
-        mkdir -p migrations
-        
-        # Create database initialization script
-        echo "📝 Creating database migration: $(pwd)/migrations/001_init.sql"
-        cat > migrations/001_init.sql << 'MIGRATION_EOF'
--- Create users table
-CREATE TABLE IF NOT EXISTS users (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    username VARCHAR(50) UNIQUE NOT NULL,
-    email VARCHAR(100) UNIQUE NOT NULL,
-    password_hash VARCHAR(255) NOT NULL,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
--- Create translation_history table
-CREATE TABLE IF NOT EXISTS translation_history (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    source_text TEXT NOT NULL,
-    translated_text TEXT NOT NULL,
-    source_language VARCHAR(10) NOT NULL,
-    target_language VARCHAR(10) NOT NULL,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
--- Create indexes
-CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
-CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);
-CREATE INDEX IF NOT EXISTS idx_translation_history_user_id ON translation_history(user_id);
-CREATE INDEX IF NOT EXISTS idx_translation_history_created_at ON translation_history(created_at);
-MIGRATION_EOF
-
-        # Create statistics table migration
-        echo "📝 Creating statistics migration: $(pwd)/migrations/002_add_statistics.sql"
-        cat > migrations/002_add_statistics.sql << 'MIGRATION2_EOF'
--- Create token usage table for OpenAI token tracking
-CREATE TABLE IF NOT EXISTS token_usage (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    input_tokens INTEGER NOT NULL DEFAULT 0,
-    output_tokens INTEGER NOT NULL DEFAULT 0,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
--- Create index for faster queries
-CREATE INDEX IF NOT EXISTS idx_token_usage_user_id ON token_usage(user_id);
-CREATE INDEX IF NOT EXISTS idx_token_usage_created_at ON token_usage(created_at);
-MIGRATION2_EOF
-
-        # Create docker-compose.yml
-        echo "📝 Creating docker-compose.yml in: $(pwd)/docker-compose.yml"
-        cat > docker-compose.yml << 'COMPOSE_EOF'
-services:
-  postgres:
-    image: postgres:15-alpine
-    container_name: smart-glasses-postgres
-    environment:
-      POSTGRES_USER: smartglasses
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-smartglasses123}
-      POSTGRES_DB: smart_glasses
-    ports:
-      - "5432:5432"
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-      - ./migrations:/docker-entrypoint-initdb.d
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U smartglasses"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    restart: unless-stopped
-
-  redis:
-    image: redis:7-alpine
-    container_name: smart-glasses-redis
-    ports:
-      - "6379:6379"
-    volumes:
-      - redis_data:/data
-    command: redis-server --appendonly yes
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    restart: unless-stopped
-
-  app:
-    image: \$CONTAINER_REGISTRY.azurecr.io/\$IMAGE_NAME-backend:\$IMAGE_TAG
-    container_name: smart-glasses-app
-    environment:
-      SERVER_PORT: "8080"
-      SERVER_ENV: "production"
-      POSTGRES_DSN: "postgres://smartglasses:${POSTGRES_PASSWORD:-smartglasses123}@postgres:5432/smart_glasses?sslmode=disable"
-      REDIS_ADDR: "redis:6379"
-      REDIS_PASSWORD: ""
-      JWT_SECRET_KEY: "${JWT_SECRET_KEY:-change-this-in-production}"
-      JWT_ACCESS_TOKEN_EXPIRY: "1h"
-      JWT_REFRESH_TOKEN_EXPIRY: "168h"
-      AZURE_OPENAI_ENDPOINT: "${AZURE_OPENAI_ENDPOINT}"
-      AZURE_OPENAI_API_KEY: "${AZURE_OPENAI_API_KEY}"
-      AZURE_OPENAI_DEPLOYMENT_NAME: "${AZURE_OPENAI_DEPLOYMENT_NAME:-gpt-4o}"
-      AZURE_OPENAI_API_VERSION: "${AZURE_OPENAI_API_VERSION:-2024-08-01-preview}"
-      AZURE_OPENAI_REALTIME_ENDPOINT: "${AZURE_OPENAI_REALTIME_ENDPOINT}"
-      AZURE_OPENAI_REALTIME_API_KEY: "${AZURE_OPENAI_REALTIME_API_KEY}"
-      AZURE_OPENAI_REALTIME_DEPLOYMENT_NAME: "${AZURE_OPENAI_REALTIME_DEPLOYMENT_NAME:-gpt-realtime}"
-      AZURE_OPENAI_REALTIME_API_VERSION: "${AZURE_OPENAI_REALTIME_API_VERSION:-2024-10-01-preview}"
-    ports:
-      - "8080:8080"
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    restart: unless-stopped
-
-  frontend:
-    image: \$CONTAINER_REGISTRY.azurecr.io/\$IMAGE_NAME-frontend:\$IMAGE_TAG
-    container_name: smart-glasses-frontend
-    ports:
-      - "3000:80"
-    depends_on:
-      - app
-    restart: unless-stopped
-
-volumes:
-  postgres_data:
-  redis_data:
-COMPOSE_EOF
-        
-        # Create .env file
-        echo "📝 Creating .env file in: $(pwd)/.env"
-        cat > .env << 'ENV_EOF'
-AZURE_OPENAI_ENDPOINT=\$AZURE_OPENAI_ENDPOINT
-AZURE_OPENAI_API_KEY=\$AZURE_OPENAI_API_KEY
-AZURE_OPENAI_DEPLOYMENT_NAME=\$AZURE_OPENAI_DEPLOYMENT_NAME
-AZURE_OPENAI_API_VERSION=\$AZURE_OPENAI_API_VERSION
-AZURE_OPENAI_REALTIME_ENDPOINT=\$AZURE_OPENAI_REALTIME_ENDPOINT
-AZURE_OPENAI_REALTIME_API_KEY=\$AZURE_OPENAI_REALTIME_API_KEY
-AZURE_OPENAI_REALTIME_DEPLOYMENT_NAME=\$AZURE_OPENAI_REALTIME_DEPLOYMENT_NAME
-AZURE_OPENAI_REALTIME_API_VERSION=\$AZURE_OPENAI_REALTIME_API_VERSION
-POSTGRES_PASSWORD=\$POSTGRES_PASSWORD
-JWT_SECRET_KEY=\$JWT_SECRET_KEY
-ENV_EOF
-        
-        echo "📋 Files created successfully:"
-        echo "   - Working directory: $(pwd)"
-        echo "   - Files in directory:"
-        ls -la
-        echo "   - Migrations directory:"
-        ls -la migrations/ || echo "Migrations directory not found"
-        
-        # Stop existing services
-        echo "🛑 Stopping existing services..."
-        echo "   - Executing: docker-compose down"
-        echo "   - Working directory: $(pwd)"
-        docker-compose down || true
-        
-        # Pull latest images
-        echo "📥 Pulling latest images..."
-        echo "   - Executing: docker-compose pull"
-        echo "   - Working directory: $(pwd)"
-        docker-compose pull
-        
-        # Start services (exactly like your manual test)
-        echo "🚀 Starting services with docker-compose up -d..."
-        echo "   - Executing: docker-compose up -d"
-        echo "   - Working directory: $(pwd)"
-        echo "   - User: $(whoami)"
-        docker-compose up -d
-        
-        # Wait for services to start and check health
-        echo "⏳ Waiting for services to start..."
-        sleep 15
-        
-        # Check status multiple times
-        echo "📊 Checking service status..."
-        echo "   - Executing: docker-compose ps"
-        echo "   - Working directory: $(pwd)"
-        docker-compose ps
-        
-        # Wait a bit more and check again
-        echo "⏳ Waiting additional time for services to stabilize..."
-        sleep 15
-        
-        echo "📊 Checking service status again..."
-        docker-compose ps
-        
-        # Show detailed logs for debugging
-        echo "📜 Detailed logs for all services:"
-        echo "   - Executing: docker-compose logs --tail=50"
-        echo "   - Working directory: $(pwd)"
-        docker-compose logs --tail=50
-        
-        # Check individual service health
-        echo "🏥 Checking individual service health..."
-        
-        # Check PostgreSQL
-        echo "🔍 PostgreSQL health check:"
-        if docker-compose exec -T postgres pg_isready -U smartglasses; then
-            echo "✅ PostgreSQL is ready"
-            
-            # Check if tables exist
-            echo "🔍 Checking database tables:"
-            docker-compose exec -T postgres psql -U smartglasses -d smart_glasses -c "\dt" || echo "⚠️  Could not list tables"
-        else
-            echo "❌ PostgreSQL is not ready"
-        fi
-        
-        # Check Redis
-        echo "🔍 Redis health check:"
-        if docker-compose exec -T redis redis-cli ping; then
-            echo "✅ Redis is ready"
-        else
-            echo "❌ Redis is not ready"
-        fi
-        
-        # Check if backend is responding
-        echo "🔍 Backend health check:"
-        if curl -f http://localhost:8080/health 2>/dev/null; then
-            echo "✅ Backend is responding"
-        else
-            echo "❌ Backend is not responding"
-            echo "📜 Backend logs:"
-            docker-compose logs app --tail=20 || true
-        fi
-        
-        echo "✅ Deployment completed!"
-        echo "📍 Final status:"
-        echo "   - User: $(whoami)"
-        echo "   - Directory: $(pwd)"
-        echo "   - Files created:"
-        ls -la
-        
-        USEREOF
-        
-        echo "✅ VM deployment script completed!"
-        echo "📍 Script completed as user: $(whoami)"
-        EOF
-        
-        chmod +x deploy-script.sh
-
-    - name: Deploy to VM using Azure CLI
-      run: |
-        # Get ACR credentials
-        ACR_PASSWORD=$(az acr credential show --name ${{ env.CONTAINER_REGISTRY }} --query "passwords[0].value" --output tsv)
-        
-        # Execute deployment script on VM
+        # Upload the deployment script from our repository
         az vm run-command invoke \
           --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
           --name ${{ env.VM_NAME }} \
           --command-id RunShellScript \
-          --scripts @deploy-script.sh \
-          --parameters \
-            ACR_PASSWORD="$ACR_PASSWORD" \
-            CONTAINER_REGISTRY="${{ env.CONTAINER_REGISTRY }}" \
-            IMAGE_NAME="${{ env.IMAGE_NAME }}" \
-            IMAGE_TAG="${{ env.IMAGE_TAG }}" \
-            AZURE_OPENAI_ENDPOINT="${{ secrets.AZURE_OPENAI_ENDPOINT }}" \
-            AZURE_OPENAI_API_KEY="${{ secrets.AZURE_OPENAI_API_KEY }}" \
-            AZURE_OPENAI_DEPLOYMENT_NAME="${{ secrets.AZURE_OPENAI_DEPLOYMENT_NAME }}" \
-            AZURE_OPENAI_API_VERSION="${{ secrets.AZURE_OPENAI_API_VERSION }}" \
-            AZURE_OPENAI_REALTIME_ENDPOINT="${{ secrets.AZURE_OPENAI_REALTIME_ENDPOINT }}" \
-            AZURE_OPENAI_REALTIME_API_KEY="${{ secrets.AZURE_OPENAI_REALTIME_API_KEY }}" \
-            AZURE_OPENAI_REALTIME_DEPLOYMENT_NAME="${{ secrets.AZURE_OPENAI_REALTIME_DEPLOYMENT_NAME }}" \
-            AZURE_OPENAI_REALTIME_API_VERSION="${{ secrets.AZURE_OPENAI_REALTIME_API_VERSION }}" \
-            POSTGRES_PASSWORD="${{ secrets.POSTGRES_PASSWORD }}" \
-            JWT_SECRET_KEY="${{ secrets.JWT_SECRET_KEY }}"
+          --scripts "curl -s -o /tmp/vm-deploy.sh https://raw.githubusercontent.com/${{ github.repository }}/main/scripts/vm-deploy.sh && chmod +x /tmp/vm-deploy.sh"
+
+    - name: Execute deployment on VM
+      run: |
+        # Get ACR credentials
+        ACR_PASSWORD=$(az acr credential show --name ${{ env.CONTAINER_REGISTRY }} --query "passwords[0].value" --output tsv)
+        
+        # Execute deployment script on VM with environment variables
+        az vm run-command invoke \
+          --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+          --name ${{ env.VM_NAME }} \
+          --command-id RunShellScript \
+          --scripts "
+            export ACR_PASSWORD='$ACR_PASSWORD'
+            export CONTAINER_REGISTRY='${{ env.CONTAINER_REGISTRY }}'
+            export IMAGE_NAME='${{ env.IMAGE_NAME }}'
+            export IMAGE_TAG='${{ env.IMAGE_TAG }}'
+            export AZURE_OPENAI_ENDPOINT='${{ secrets.AZURE_OPENAI_ENDPOINT }}'
+            export AZURE_OPENAI_API_KEY='${{ secrets.AZURE_OPENAI_API_KEY }}'
+            export AZURE_OPENAI_DEPLOYMENT_NAME='${{ secrets.AZURE_OPENAI_DEPLOYMENT_NAME }}'
+            export AZURE_OPENAI_API_VERSION='${{ secrets.AZURE_OPENAI_API_VERSION }}'
+            export AZURE_OPENAI_REALTIME_ENDPOINT='${{ secrets.AZURE_OPENAI_REALTIME_ENDPOINT }}'
+            export AZURE_OPENAI_REALTIME_API_KEY='${{ secrets.AZURE_OPENAI_REALTIME_API_KEY }}'
+            export AZURE_OPENAI_REALTIME_DEPLOYMENT_NAME='${{ secrets.AZURE_OPENAI_REALTIME_DEPLOYMENT_NAME }}'
+            export AZURE_OPENAI_REALTIME_API_VERSION='${{ secrets.AZURE_OPENAI_REALTIME_API_VERSION }}'
+            export POSTGRES_PASSWORD='${{ secrets.POSTGRES_PASSWORD }}'
+            export JWT_SECRET_KEY='${{ secrets.JWT_SECRET_KEY }}'
+            
+            # Run the deployment script
+            /tmp/vm-deploy.sh
+          "
 
     - name: Health Check
       run: |
@@ -496,7 +186,7 @@ ENV_EOF
         echo "🏥 开始健康检查..."
         echo "🌐 VM IP: $VM_IP"
         
-        # Wait longer for services to be ready
+        # Wait for services to be ready
         echo "⏳ 等待服务准备就绪..."
         sleep 90
         
