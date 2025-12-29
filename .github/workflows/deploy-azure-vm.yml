@@ -95,8 +95,15 @@ jobs:
           fi
           
           # Ensure VM has system-assigned managed identity
-          echo "Ensuring VM has managed identity..."
-          az vm identity assign --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --name ${{ env.VM_NAME }} || echo "Managed identity already exists"
+          echo "Checking if VM already has managed identity..."
+          EXISTING_IDENTITY=$(az vm identity show --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --name ${{ env.VM_NAME }} --query systemAssignedIdentity --output tsv 2>/dev/null || echo "")
+          
+          if [ -z "$EXISTING_IDENTITY" ] || [ "$EXISTING_IDENTITY" = "None" ]; then
+            echo "Assigning managed identity to VM..."
+            az vm identity assign --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --name ${{ env.VM_NAME }}
+          else
+            echo "✅ VM already has managed identity: $EXISTING_IDENTITY"
+          fi
           
         else
           echo "Creating new Virtual Machine '${{ env.VM_NAME }}'..."
@@ -143,16 +150,30 @@ jobs:
         echo "VM Principal ID: $VM_PRINCIPAL_ID"
         
         # Grant VM's managed identity access to ACR
-        echo "Granting VM access to ACR..."
+        echo "Checking ACR access permissions..."
         ACR_ID=$(az acr show --name ${{ env.CONTAINER_REGISTRY }} --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --query id --output tsv)
         
-        # Assign AcrPull role to VM's managed identity
-        az role assignment create \
-          --assignee $VM_PRINCIPAL_ID \
-          --role AcrPull \
-          --scope $ACR_ID || echo "Role assignment may already exist"
+        # Check if role assignment already exists
+        EXISTING_ASSIGNMENT=$(az role assignment list --assignee $VM_PRINCIPAL_ID --scope $ACR_ID --role AcrPull --query "[0].id" --output tsv 2>/dev/null || echo "")
         
-        echo "✅ VM configured with ACR access"
+        if [ -z "$EXISTING_ASSIGNMENT" ]; then
+          echo "Assigning AcrPull role to VM's managed identity..."
+          # Try to assign role, but continue if it fails (might be permission issue)
+          az role assignment create \
+            --assignee $VM_PRINCIPAL_ID \
+            --role AcrPull \
+            --scope $ACR_ID || {
+            echo "⚠️  Role assignment failed - this might be due to insufficient permissions"
+            echo "ℹ️  You may need to manually assign the AcrPull role to the VM's managed identity"
+            echo "ℹ️  VM Principal ID: $VM_PRINCIPAL_ID"
+            echo "ℹ️  ACR Resource ID: $ACR_ID"
+            echo "ℹ️  Command: az role assignment create --assignee $VM_PRINCIPAL_ID --role AcrPull --scope $ACR_ID"
+          }
+        else
+          echo "✅ AcrPull role already assigned to VM's managed identity"
+        fi
+        
+        echo "✅ VM configured with managed identity"
 
     - name: Get VM Public IP
       id: vm-ip

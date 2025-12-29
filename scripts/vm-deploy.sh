@@ -49,6 +49,7 @@ echo "✅ Docker 访问正常"
 
 # 登录 ACR 使用托管身份
 echo "🔐 使用托管身份登录 Azure Container Registry..."
+
 # 首先安装 Azure CLI（如果还没有安装）
 if ! command -v az &> /dev/null; then
     echo "安装 Azure CLI..."
@@ -57,12 +58,29 @@ fi
 
 # 使用托管身份登录 Azure
 echo "使用托管身份登录 Azure..."
-az login --identity
-
-# 登录到 ACR
-echo "登录到 ACR: $CONTAINER_REGISTRY.azurecr.io"
-az acr login --name $CONTAINER_REGISTRY
-echo "✅ ACR 登录成功"
+if az login --identity; then
+    echo "✅ 托管身份登录成功"
+    
+    # 登录到 ACR
+    echo "登录到 ACR: $CONTAINER_REGISTRY.azurecr.io"
+    if az acr login --name $CONTAINER_REGISTRY; then
+        echo "✅ ACR 登录成功"
+    else
+        echo "❌ ACR 登录失败"
+        echo "ℹ️  可能的原因："
+        echo "   1. VM 托管身份没有 AcrPull 权限"
+        echo "   2. ACR 不存在或名称错误"
+        echo "ℹ️  请运行手动角色分配脚本: ./scripts/assign-acr-role-manual.sh"
+        exit 1
+    fi
+else
+    echo "❌ 托管身份登录失败"
+    echo "ℹ️  可能的原因："
+    echo "   1. VM 没有分配托管身份"
+    echo "   2. 托管身份配置有问题"
+    echo "ℹ️  请检查 VM 托管身份配置"
+    exit 1
+fi
 
 # 创建迁移目录和文件
 mkdir -p migrations
