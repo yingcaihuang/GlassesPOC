@@ -272,83 +272,83 @@ MIGRATION2_EOF
         # Create docker-compose.yml
         echo "📝 Creating docker-compose.yml in: $(pwd)/docker-compose.yml"
         cat > docker-compose.yml << 'COMPOSE_EOF'
-        services:
-          postgres:
-            image: postgres:15-alpine
-            container_name: smart-glasses-postgres
-            environment:
-              POSTGRES_USER: smartglasses
-              POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-smartglasses123}
-              POSTGRES_DB: smart_glasses
-            ports:
-              - "5432:5432"
-            volumes:
-              - postgres_data:/var/lib/postgresql/data
-              - ./migrations:/docker-entrypoint-initdb.d
-            healthcheck:
-              test: ["CMD-SHELL", "pg_isready -U smartglasses"]
-              interval: 10s
-              timeout: 5s
-              retries: 5
-            restart: unless-stopped
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: smart-glasses-postgres
+    environment:
+      POSTGRES_USER: smartglasses
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-smartglasses123}
+      POSTGRES_DB: smart_glasses
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./migrations:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U smartglasses"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
 
-          redis:
-            image: redis:7-alpine
-            container_name: smart-glasses-redis
-            ports:
-              - "6379:6379"
-            volumes:
-              - redis_data:/data
-            command: redis-server --appendonly yes
-            healthcheck:
-              test: ["CMD", "redis-cli", "ping"]
-              interval: 10s
-              timeout: 5s
-              retries: 5
-            restart: unless-stopped
+  redis:
+    image: redis:7-alpine
+    container_name: smart-glasses-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
 
-          app:
-            image: ${{ env.CONTAINER_REGISTRY }}.azurecr.io/${{ env.IMAGE_NAME }}-backend:${{ env.IMAGE_TAG }}
-            container_name: smart-glasses-app
-            environment:
-              SERVER_PORT: "8080"
-              SERVER_ENV: "production"
-              POSTGRES_DSN: "postgres://smartglasses:${POSTGRES_PASSWORD:-smartglasses123}@postgres:5432/smart_glasses?sslmode=disable"
-              REDIS_ADDR: "redis:6379"
-              REDIS_PASSWORD: ""
-              JWT_SECRET_KEY: "${JWT_SECRET_KEY:-change-this-in-production}"
-              JWT_ACCESS_TOKEN_EXPIRY: "1h"
-              JWT_REFRESH_TOKEN_EXPIRY: "168h"
-              AZURE_OPENAI_ENDPOINT: "${AZURE_OPENAI_ENDPOINT}"
-              AZURE_OPENAI_API_KEY: "${AZURE_OPENAI_API_KEY}"
-              AZURE_OPENAI_DEPLOYMENT_NAME: "${AZURE_OPENAI_DEPLOYMENT_NAME:-gpt-4o}"
-              AZURE_OPENAI_API_VERSION: "${AZURE_OPENAI_API_VERSION:-2024-08-01-preview}"
-              AZURE_OPENAI_REALTIME_ENDPOINT: "${AZURE_OPENAI_REALTIME_ENDPOINT}"
-              AZURE_OPENAI_REALTIME_API_KEY: "${AZURE_OPENAI_REALTIME_API_KEY}"
-              AZURE_OPENAI_REALTIME_DEPLOYMENT_NAME: "${AZURE_OPENAI_REALTIME_DEPLOYMENT_NAME:-gpt-realtime}"
-              AZURE_OPENAI_REALTIME_API_VERSION: "${AZURE_OPENAI_REALTIME_API_VERSION:-2024-10-01-preview}"
-            ports:
-              - "8080:8080"
-            depends_on:
-              postgres:
-                condition: service_healthy
-              redis:
-                condition: service_healthy
-            restart: unless-stopped
+  app:
+    image: ${{ env.CONTAINER_REGISTRY }}.azurecr.io/${{ env.IMAGE_NAME }}-backend:${{ env.IMAGE_TAG }}
+    container_name: smart-glasses-app
+    environment:
+      SERVER_PORT: "8080"
+      SERVER_ENV: "production"
+      POSTGRES_DSN: "postgres://smartglasses:${POSTGRES_PASSWORD:-smartglasses123}@postgres:5432/smart_glasses?sslmode=disable"
+      REDIS_ADDR: "redis:6379"
+      REDIS_PASSWORD: ""
+      JWT_SECRET_KEY: "${JWT_SECRET_KEY:-change-this-in-production}"
+      JWT_ACCESS_TOKEN_EXPIRY: "1h"
+      JWT_REFRESH_TOKEN_EXPIRY: "168h"
+      AZURE_OPENAI_ENDPOINT: "${AZURE_OPENAI_ENDPOINT}"
+      AZURE_OPENAI_API_KEY: "${AZURE_OPENAI_API_KEY}"
+      AZURE_OPENAI_DEPLOYMENT_NAME: "${AZURE_OPENAI_DEPLOYMENT_NAME:-gpt-4o}"
+      AZURE_OPENAI_API_VERSION: "${AZURE_OPENAI_API_VERSION:-2024-08-01-preview}"
+      AZURE_OPENAI_REALTIME_ENDPOINT: "${AZURE_OPENAI_REALTIME_ENDPOINT}"
+      AZURE_OPENAI_REALTIME_API_KEY: "${AZURE_OPENAI_REALTIME_API_KEY}"
+      AZURE_OPENAI_REALTIME_DEPLOYMENT_NAME: "${AZURE_OPENAI_REALTIME_DEPLOYMENT_NAME:-gpt-realtime}"
+      AZURE_OPENAI_REALTIME_API_VERSION: "${AZURE_OPENAI_REALTIME_API_VERSION:-2024-10-01-preview}"
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
 
-          frontend:
-            image: ${{ env.CONTAINER_REGISTRY }}.azurecr.io/${{ env.IMAGE_NAME }}-frontend:${{ env.IMAGE_TAG }}
-            container_name: smart-glasses-frontend
-            ports:
-              - "3000:80"
-            depends_on:
-              - app
-            restart: unless-stopped
+  frontend:
+    image: ${{ env.CONTAINER_REGISTRY }}.azurecr.io/${{ env.IMAGE_NAME }}-frontend:${{ env.IMAGE_TAG }}
+    container_name: smart-glasses-frontend
+    ports:
+      - "3000:80"
+    depends_on:
+      - app
+    restart: unless-stopped
 
-        volumes:
-          postgres_data:
-          redis_data:
-        COMPOSE_EOF
+volumes:
+  postgres_data:
+  redis_data:
+COMPOSE_EOF
         
         # Create .env file
         echo "📝 Creating .env file in: $(pwd)/.env"
