@@ -73,4 +73,4 @@ checkpoint-*.md
 # Temporary build files
 server
 service.test
-
+github-secrets.txt
