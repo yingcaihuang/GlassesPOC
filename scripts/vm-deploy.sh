@@ -268,6 +268,10 @@ ls -la
 echo "🛑 停止现有服务..."
 docker-compose down || true
 
+# 清理旧的数据库数据（强制重新初始化）
+echo "🗑️ 清理旧的数据库数据..."
+docker volume rm smart-glasses-app_postgres_data 2>/dev/null || true
+
 # 拉取最新镜像
 echo "📥 拉取最新镜像..."
 # 先尝试拉取，如果失败则检查可用的镜像标签
@@ -397,15 +401,86 @@ docker-compose up -d
 
 # 等待服务启动
 echo "⏳ 等待服务启动..."
-sleep 20
+sleep 30
 
 # 检查服务状态
 echo "📊 检查服务状态..."
 docker-compose ps
 
-# 显示日志
-echo "📜 显示服务日志:"
-docker-compose logs --tail=30
+# 强制执行数据库迁移
+echo "🔧 强制执行数据库迁移..."
+echo "⏳ 等待 PostgreSQL 完全启动..."
+sleep 10
+
+# 检查 PostgreSQL 是否准备就绪
+for i in {1..30}; do
+    if docker-compose exec -T postgres pg_isready -U smartglasses >/dev/null 2>&1; then
+        echo "✅ PostgreSQL 已准备就绪"
+        break
+    else
+        echo "⏳ 等待 PostgreSQL... (尝试 $i/30)"
+        sleep 2
+    fi
+done
+
+# 执行数据库迁移
+echo "📝 执行数据库迁移脚本..."
+docker-compose exec -T postgres psql -U smartglasses -d smart_glasses << "MIGRATION_SQL"
+-- Create users table
+CREATE TABLE IF NOT EXISTS users (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    username VARCHAR(50) UNIQUE NOT NULL,
+    email VARCHAR(100) UNIQUE NOT NULL,
+    password_hash VARCHAR(255) NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Create translation_history table
+CREATE TABLE IF NOT EXISTS translation_history (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    source_text TEXT NOT NULL,
+    translated_text TEXT NOT NULL,
+    source_language VARCHAR(10) NOT NULL,
+    target_language VARCHAR(10) NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Create token usage table for OpenAI token tracking
+CREATE TABLE IF NOT EXISTS token_usage (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    input_tokens INTEGER NOT NULL DEFAULT 0,
+    output_tokens INTEGER NOT NULL DEFAULT 0,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Create indexes
+CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
+CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);
+CREATE INDEX IF NOT EXISTS idx_translation_history_user_id ON translation_history(user_id);
+CREATE INDEX IF NOT EXISTS idx_translation_history_created_at ON translation_history(created_at);
+CREATE INDEX IF NOT EXISTS idx_token_usage_user_id ON token_usage(user_id);
+CREATE INDEX IF NOT EXISTS idx_token_usage_created_at ON token_usage(created_at);
+
+-- Show created tables
+\dt
+MIGRATION_SQL
+
+echo "✅ 数据库迁移执行完成"
+
+# 验证表是否创建成功
+echo "🔍 验证数据库表..."
+docker-compose exec -T postgres psql -U smartglasses -d smart_glasses -c "\dt" || echo "⚠️  无法列出表"
+
+# 测试数据库连接
+echo "🧪 测试数据库连接..."
+docker-compose exec -T postgres psql -U smartglasses -d smart_glasses -c "SELECT '\''Database connection successful'\'' as status;" || echo "⚠️  数据库连接测试失败"
+
+# 显示应用日志
+echo "📜 显示应用日志:"
+docker-compose logs --tail=20 app
 
 echo "✅ 部署完成!"
 '

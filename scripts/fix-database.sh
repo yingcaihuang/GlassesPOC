@@ -71,7 +71,7 @@ cd /home/azureuser/smart-glasses-app
 if ! docker-compose ps postgres | grep -q "Up"; then
     echo "PostgreSQL 容器未运行，启动容器..."
     docker-compose up -d postgres
-    sleep 10
+    sleep 15
 fi
 
 # 等待 PostgreSQL 准备就绪
@@ -88,8 +88,6 @@ done
 
 # 执行数据库迁移
 echo "执行数据库迁移..."
-
-# 创建 users 表
 docker-compose exec -T postgres psql -U smartglasses -d smart_glasses << 'SQL_EOF'
 -- Create users table
 CREATE TABLE IF NOT EXISTS users (
@@ -112,13 +110,12 @@ CREATE TABLE IF NOT EXISTS translation_history (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
--- Create statistics table
-CREATE TABLE IF NOT EXISTS statistics (
+-- Create token usage table for OpenAI token tracking
+CREATE TABLE IF NOT EXISTS token_usage (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id UUID REFERENCES users(id) ON DELETE CASCADE,
-    metric_name VARCHAR(100) NOT NULL,
-    metric_value DECIMAL(10,2) NOT NULL,
-    metric_type VARCHAR(50) NOT NULL,
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    input_tokens INTEGER NOT NULL DEFAULT 0,
+    output_tokens INTEGER NOT NULL DEFAULT 0,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -127,9 +124,8 @@ CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
 CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);
 CREATE INDEX IF NOT EXISTS idx_translation_history_user_id ON translation_history(user_id);
 CREATE INDEX IF NOT EXISTS idx_translation_history_created_at ON translation_history(created_at);
-CREATE INDEX IF NOT EXISTS idx_statistics_user_id ON statistics(user_id);
-CREATE INDEX IF NOT EXISTS idx_statistics_metric_name ON statistics(metric_name);
-CREATE INDEX IF NOT EXISTS idx_statistics_created_at ON statistics(created_at);
+CREATE INDEX IF NOT EXISTS idx_token_usage_user_id ON token_usage(user_id);
+CREATE INDEX IF NOT EXISTS idx_token_usage_created_at ON token_usage(created_at);
 
 -- 显示创建的表
 \dt
@@ -140,6 +136,10 @@ echo "✅ 数据库修复完成！"
 # 验证表是否存在
 echo "验证表是否存在..."
 docker-compose exec -T postgres psql -U smartglasses -d smart_glasses -c "\dt"
+
+# 测试用户表
+echo "测试用户表结构..."
+docker-compose exec -T postgres psql -U smartglasses -d smart_glasses -c "\d users"
 
 echo "🎉 数据库修复成功！"
 EOF
