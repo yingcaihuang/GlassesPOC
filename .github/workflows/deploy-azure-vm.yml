@@ -94,10 +94,14 @@ jobs:
             sleep 30
           fi
           
+          # Ensure VM has system-assigned managed identity
+          echo "Ensuring VM has managed identity..."
+          az vm identity assign --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --name ${{ env.VM_NAME }} || echo "Managed identity already exists"
+          
         else
           echo "Creating new Virtual Machine '${{ env.VM_NAME }}'..."
           
-          # Create VM
+          # Create VM with system-assigned managed identity
           az vm create \
             --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
             --name ${{ env.VM_NAME }} \
@@ -106,7 +110,8 @@ jobs:
             --admin-username azureuser \
             --generate-ssh-keys \
             --public-ip-sku Standard \
-            --nsg-rule SSH
+            --nsg-rule SSH \
+            --assign-identity
           
           # Open required ports
           echo "Configuring network security group..."
@@ -132,6 +137,22 @@ jobs:
           
           echo "✅ New VM created and configured successfully"
         fi
+        
+        # Get VM's managed identity principal ID
+        VM_PRINCIPAL_ID=$(az vm identity show --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --name ${{ env.VM_NAME }} --query principalId --output tsv)
+        echo "VM Principal ID: $VM_PRINCIPAL_ID"
+        
+        # Grant VM's managed identity access to ACR
+        echo "Granting VM access to ACR..."
+        ACR_ID=$(az acr show --name ${{ env.CONTAINER_REGISTRY }} --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --query id --output tsv)
+        
+        # Assign AcrPull role to VM's managed identity
+        az role assignment create \
+          --assignee $VM_PRINCIPAL_ID \
+          --role AcrPull \
+          --scope $ACR_ID || echo "Role assignment may already exist"
+        
+        echo "✅ VM configured with ACR access"
 
     - name: Get VM Public IP
       id: vm-ip
@@ -151,16 +172,12 @@ jobs:
 
     - name: Execute deployment on VM
       run: |
-        # Get ACR credentials
-        ACR_PASSWORD=$(az acr credential show --name ${{ env.CONTAINER_REGISTRY }} --query "passwords[0].value" --output tsv)
-        
         # Execute deployment script on VM with environment variables
         az vm run-command invoke \
           --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
           --name ${{ env.VM_NAME }} \
           --command-id RunShellScript \
           --scripts "
-            export ACR_PASSWORD='$ACR_PASSWORD'
             export CONTAINER_REGISTRY='${{ env.CONTAINER_REGISTRY }}'
             export IMAGE_NAME='${{ env.IMAGE_NAME }}'
             export IMAGE_TAG='${{ env.IMAGE_TAG }}'

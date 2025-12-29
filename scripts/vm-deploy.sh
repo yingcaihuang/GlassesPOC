@@ -47,9 +47,21 @@ if ! docker info >/dev/null 2>&1; then
 fi
 echo "✅ Docker 访问正常"
 
-# 登录 ACR
-echo "🔐 登录 Azure Container Registry..."
-echo "$ACR_PASSWORD" | docker login $CONTAINER_REGISTRY.azurecr.io --username $CONTAINER_REGISTRY --password-stdin
+# 登录 ACR 使用托管身份
+echo "🔐 使用托管身份登录 Azure Container Registry..."
+# 首先安装 Azure CLI（如果还没有安装）
+if ! command -v az &> /dev/null; then
+    echo "安装 Azure CLI..."
+    curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash
+fi
+
+# 使用托管身份登录 Azure
+echo "使用托管身份登录 Azure..."
+az login --identity
+
+# 登录到 ACR
+echo "登录到 ACR: $CONTAINER_REGISTRY.azurecr.io"
+az acr login --name $CONTAINER_REGISTRY
 echo "✅ ACR 登录成功"
 
 # 创建迁移目录和文件
