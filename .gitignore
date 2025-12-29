@@ -40,3 +40,37 @@ Thumbs.db
 bin/
 dist/
 
+# Development and testing files
+test-*.html
+test-*.sh
+test-*.js
+diagnose-*.sh
+final-verification.sh
+websocket-debug.html
+*-REPORT.md
+*-FIX*.md
+*-SUCCESS*.md
+*-COMPLETE*.md
+AUDIO-*.md
+CALL-STACK-*.md
+CONTINUOUS-*.md
+DOCKER-*.md
+FIX-*.md
+GPT-*.md
+LOCAL-*.md
+QUICK*.md
+REALTIME-*.md
+SCRIPTPROCESSOR-*.md
+SECURITY-*.md
+SETUP-*.md
+START-*.md
+STATISTICS-*.md
+SYSTEM-*.md
+TASK-*.md
+WEB-AUDIO-*.md
+checkpoint-*.md
+
+# Temporary build files
+server
+service.test
+
