@@ -49,17 +49,18 @@ jobs:
       run: |
         az group create --name ${{ env.AZURE_RESOURCE_GROUP }} --location ${{ env.LOCATION }}
 
-    - name: Create Azure Container Registry (if not exists)
+    - name: Check and Configure Azure Container Registry
       run: |
-        if ! az acr show --name ${{ env.CONTAINER_REGISTRY }} --resource-group ${{ env.AZURE_RESOURCE_GROUP }} &>/dev/null; then
-          echo "Creating Azure Container Registry..."
+        if az acr show --name ${{ env.CONTAINER_REGISTRY }} --resource-group ${{ env.AZURE_RESOURCE_GROUP }} &>/dev/null; then
+          echo "✅ Azure Container Registry '${{ env.CONTAINER_REGISTRY }}' already exists, using existing registry"
+        else
+          echo "Creating new Azure Container Registry '${{ env.CONTAINER_REGISTRY }}'..."
           az acr create \
             --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
             --name ${{ env.CONTAINER_REGISTRY }} \
             --sku Basic \
             --admin-enabled true
-        else
-          echo "Azure Container Registry already exists"
+          echo "✅ New ACR created successfully"
         fi
 
     - name: Build and Push Docker Images to ACR
@@ -75,13 +76,64 @@ jobs:
         docker build -t ${{ env.CONTAINER_REGISTRY }}.azurecr.io/${{ env.IMAGE_NAME }}-frontend:${{ env.IMAGE_TAG }} ./frontend
         docker push ${{ env.CONTAINER_REGISTRY }}.azurecr.io/${{ env.IMAGE_NAME }}-frontend:${{ env.IMAGE_TAG }}
 
-    - name: Create or Update Virtual Machine
+    - name: Check and Configure Virtual Machine
       run: |
         # Check if VM exists
-        if ! az vm show --name ${{ env.VM_NAME }} --resource-group ${{ env.AZURE_RESOURCE_GROUP }} &>/dev/null; then
-          echo "Creating Virtual Machine..."
+        if az vm show --name ${{ env.VM_NAME }} --resource-group ${{ env.AZURE_RESOURCE_GROUP }} &>/dev/null; then
+          echo "✅ Virtual Machine '${{ env.VM_NAME }}' already exists, using existing VM"
           
-          # Create VM with Docker extension
+          # Get VM status
+          VM_STATUS=$(az vm show --name ${{ env.VM_NAME }} --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --show-details --query "powerState" --output tsv)
+          echo "VM Status: $VM_STATUS"
+          
+          # Start VM if it's stopped
+          if [[ "$VM_STATUS" == "VM stopped" ]] || [[ "$VM_STATUS" == "VM deallocated" ]]; then
+            echo "Starting VM..."
+            az vm start --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --name ${{ env.VM_NAME }}
+            echo "Waiting for VM to start..."
+            sleep 30
+          fi
+          
+          # Ensure Docker is running on existing VM
+          echo "Ensuring Docker is properly configured on existing VM..."
+          az vm run-command invoke \
+            --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+            --name ${{ env.VM_NAME }} \
+            --command-id RunShellScript \
+            --scripts "
+              # Start Docker service if not running
+              if ! systemctl is-active --quiet docker; then
+                echo 'Starting Docker service...'
+                sudo systemctl start docker
+                sudo systemctl enable docker
+              fi
+              
+              # Add user to docker group if not already
+              sudo usermod -aG docker azureuser || true
+              
+              # Set Docker socket permissions
+              sudo chmod 666 /var/run/docker.sock || true
+              
+              # Wait for Docker to be ready
+              for i in {1..10}; do
+                if docker info >/dev/null 2>&1; then
+                  echo 'Docker is ready'
+                  break
+                else
+                  echo 'Waiting for Docker...'
+                  sleep 3
+                fi
+              done
+              
+              echo 'Docker status:'
+              docker --version
+              docker info
+            " || echo "Warning: Docker configuration may need manual attention"
+          
+        else
+          echo "Creating new Virtual Machine '${{ env.VM_NAME }}'..."
+          
+          # Create VM
           az vm create \
             --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
             --name ${{ env.VM_NAME }} \
@@ -93,20 +145,28 @@ jobs:
             --nsg-rule SSH
           
           # Open required ports
+          echo "Configuring network security group..."
           az vm open-port --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --name ${{ env.VM_NAME }} --port 80 --priority 1001
           az vm open-port --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --name ${{ env.VM_NAME }} --port 443 --priority 1002
           az vm open-port --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --name ${{ env.VM_NAME }} --port 3000 --priority 1003
           az vm open-port --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --name ${{ env.VM_NAME }} --port 8080 --priority 1004
           
-          # Install Docker on VM
+          # Install Docker using custom script extension
+          echo "Installing Docker on new VM..."
           az vm extension set \
             --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
             --vm-name ${{ env.VM_NAME }} \
-            --name DockerExtension \
+            --name CustomScript \
             --publisher Microsoft.Azure.Extensions \
-            --version 1.1
-        else
-          echo "Virtual Machine already exists"
+            --settings '{
+              "commandToExecute": "apt-get update && apt-get install -y apt-transport-https ca-certificates curl software-properties-common && curl -fsSL https://download.docker.com/linux/ubuntu/gpg | apt-key add - && add-apt-repository \"deb [arch=amd64] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable\" && apt-get update && apt-get install -y docker-ce docker-ce-cli containerd.io && systemctl start docker && systemctl enable docker && usermod -aG docker azureuser && chmod 666 /var/run/docker.sock"
+            }'
+          
+          # Wait for Docker installation to complete
+          echo "Waiting for Docker installation to complete..."
+          sleep 60
+          
+          echo "✅ New VM created and configured successfully"
         fi
 
     - name: Get VM Public IP
@@ -123,6 +183,42 @@ jobs:
         set -e
         
         echo "🚀 Starting deployment on Azure VM..."
+        
+        # Start Docker service if not running
+        if ! systemctl is-active --quiet docker; then
+            echo "Starting Docker service..."
+            sudo systemctl start docker
+            sudo systemctl enable docker
+        fi
+        
+        # Add current user to docker group if not already
+        if ! groups $USER | grep -q docker; then
+            echo "Adding user to docker group..."
+            sudo usermod -aG docker $USER
+        fi
+        
+        # Ensure Docker socket permissions
+        sudo chmod 666 /var/run/docker.sock || true
+        
+        # Wait for Docker to be ready
+        echo "Waiting for Docker to be ready..."
+        for i in {1..30}; do
+            if docker info >/dev/null 2>&1; then
+                echo "Docker is ready"
+                break
+            else
+                echo "Waiting for Docker... (attempt $i/30)"
+                sleep 2
+            fi
+        done
+        
+        # Verify Docker is working
+        if ! docker info >/dev/null 2>&1; then
+            echo "❌ Docker is not working properly"
+            echo "Docker service status:"
+            sudo systemctl status docker
+            exit 1
+        fi
         
         # Install Docker Compose if not exists
         if ! command -v docker-compose &> /dev/null; then
@@ -232,23 +328,42 @@ jobs:
         JWT_SECRET_KEY=$JWT_SECRET_KEY
         ENV_EOF
         
-        # Stop existing services
-        docker-compose down || true
+        # Stop existing services gracefully
+        echo "Stopping existing services..."
+        docker-compose down --remove-orphans || true
+        
+        # Clean up old containers and images
+        echo "Cleaning up old containers..."
+        docker container prune -f || true
+        docker image prune -f || true
         
         # Pull latest images
+        echo "Pulling latest images..."
         docker-compose pull
         
         # Start services
+        echo "Starting services..."
         docker-compose up -d
         
         # Wait for services to start
+        echo "Waiting for services to start..."
         sleep 30
         
         # Check service status
+        echo "Checking service status..."
         docker-compose ps
         
-        # Clean up unused images
-        docker image prune -f
+        # Verify services are healthy
+        echo "Verifying service health..."
+        for i in {1..10}; do
+          if docker-compose ps | grep -q "Up"; then
+            echo "Services are running"
+            break
+          else
+            echo "Waiting for services to be ready... (attempt $i/10)"
+            sleep 5
+          fi
+        done
         
         echo "✅ Deployment completed successfully!"
         EOF
