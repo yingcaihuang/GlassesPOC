@@ -478,7 +478,7 @@ for i in {1..30}; do
         echo "✅ PostgreSQL 已准备就绪"
         break
     else
-        echo "⏳ 等待 PostgreSQL... (尝试 $i/30)"
+        echo \"⏳ 等待 PostgreSQL... \\(尝试 \$i/30\\)\"
         sleep 2
     fi
 done
@@ -536,13 +536,13 @@ docker-compose exec -T postgres psql -U smartglasses -d smart_glasses -c "\dt" |
 
 # 测试数据库连接
 echo "🧪 测试数据库连接..."
-docker-compose exec -T postgres psql -U smartglasses -d smart_glasses -c "SELECT '\''Database connection successful'\'' as status;" || echo "⚠️  数据库连接测试失败"
+docker-compose exec -T postgres psql -U smartglasses -d smart_glasses -c "SELECT 'Database connection successful' as status;" || echo "⚠️  数据库连接测试失败"
 
 # 显示应用日志
 echo "📜 显示应用日志:"
 docker-compose logs --tail=20 app
 
-echo \"✅ 部署完成!\"
+echo "✅ 部署完成!"
 "
 
 echo "✅ VM 简化部署脚本完成!"
