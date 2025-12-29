@@ -65,8 +65,18 @@ fi
 
 if [ -z "$IMAGE_TAG" ]; then
     echo "❌ IMAGE_TAG 环境变量未设置"
-    echo "ℹ️  使用默认值: latest"
-    IMAGE_TAG="latest"
+    echo "ℹ️  尝试获取最新镜像标签..."
+    
+    # 尝试获取最新的镜像标签
+    LATEST_TAG=$(az acr repository show-tags --name $CONTAINER_REGISTRY --repository ${IMAGE_NAME}-backend --orderby time_desc --output tsv | head -1 2>/dev/null || echo "")
+    
+    if [ -n "$LATEST_TAG" ]; then
+        IMAGE_TAG="$LATEST_TAG"
+        echo "ℹ️  找到最新标签: $IMAGE_TAG"
+    else
+        echo "ℹ️  无法获取最新标签，使用默认值: latest"
+        IMAGE_TAG="latest"
+    fi
 fi
 
 echo "📋 使用的配置:"
