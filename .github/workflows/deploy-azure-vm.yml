@@ -186,7 +186,7 @@ jobs:
         
         # Ensure we're running as root for system operations
         if [ "$EUID" -ne 0 ]; then
-            echo "Switching to root for system operations..."
+            echo "Re-executing as root..."
             exec sudo "$0" "$@"
         fi
         
@@ -203,9 +203,17 @@ jobs:
         echo "Setting Docker socket permissions..."
         chmod 666 /var/run/docker.sock || true
         
-        # Switch to azureuser for Docker operations
-        echo "Switching to azureuser for application deployment..."
-        su - azureuser << 'USEREOF'
+        # Create application directory
+        echo "Creating application directory..."
+        mkdir -p /home/azureuser/smart-glasses-app
+        chown azureuser:azureuser /home/azureuser/smart-glasses-app
+        
+        # Switch to azureuser and execute deployment
+        echo "Executing deployment as azureuser..."
+        sudo -u azureuser bash << 'USEREOF'
+        
+        # Set working directory
+        cd /home/azureuser/smart-glasses-app
         
         # Wait for Docker to be ready
         echo "Waiting for Docker to be ready..."
@@ -236,11 +244,8 @@ jobs:
         echo "Logging into Azure Container Registry..."
         echo "$ACR_PASSWORD" | docker login ${{ env.CONTAINER_REGISTRY }}.azurecr.io --username ${{ env.CONTAINER_REGISTRY }} --password-stdin
         
-        # Create application directory
-        mkdir -p /home/azureuser/smart-glasses-app
-        cd /home/azureuser/smart-glasses-app
-        
         # Create docker-compose.yml for production
+        echo "Creating docker-compose.yml..."
         cat > docker-compose.yml << 'COMPOSE_EOF'
         services:
           postgres:
@@ -320,6 +325,7 @@ jobs:
         COMPOSE_EOF
         
         # Create .env file
+        echo "Creating .env file..."
         cat > .env << 'ENV_EOF'
         AZURE_OPENAI_ENDPOINT=$AZURE_OPENAI_ENDPOINT
         AZURE_OPENAI_API_KEY=$AZURE_OPENAI_API_KEY
@@ -358,11 +364,16 @@ jobs:
         echo "Checking service status..."
         docker-compose ps
         
+        # Show logs for debugging
+        echo "Showing recent logs..."
+        docker-compose logs --tail=20
+        
         # Verify services are healthy
         echo "Verifying service health..."
         for i in {1..10}; do
-          if docker-compose ps | grep -q "Up"; then
-            echo "Services are running"
+          RUNNING_CONTAINERS=$(docker-compose ps --services --filter "status=running" | wc -l)
+          if [ "$RUNNING_CONTAINERS" -gt 0 ]; then
+            echo "Found $RUNNING_CONTAINERS running containers"
             break
           else
             echo "Waiting for services to be ready... (attempt $i/10)"
