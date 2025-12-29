@@ -184,12 +184,29 @@ jobs:
 
     - name: Upload deployment files to VM
       run: |
-        # Upload the deployment script from our repository
+        # Create glass directory and upload the deployment script and manager
         az vm run-command invoke \
           --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
           --name ${{ env.VM_NAME }} \
           --command-id RunShellScript \
-          --scripts "curl -s -o /tmp/vm-deploy.sh https://raw.githubusercontent.com/${{ github.repository }}/main/scripts/vm-deploy.sh && chmod +x /tmp/vm-deploy.sh"
+          --scripts "
+            mkdir -p /tmp/glass
+            curl -s -o /tmp/glass/vm-deploy.sh https://raw.githubusercontent.com/${{ github.repository }}/main/scripts/vm-deploy.sh
+            curl -s -o /tmp/glass/glass-manager.sh https://raw.githubusercontent.com/${{ github.repository }}/main/scripts/glass-manager.sh
+            curl -s -o /tmp/glass/check-env-vars.sh https://raw.githubusercontent.com/${{ github.repository }}/main/scripts/check-env-vars.sh
+            chmod +x /tmp/glass/vm-deploy.sh
+            chmod +x /tmp/glass/glass-manager.sh
+            chmod +x /tmp/glass/check-env-vars.sh
+            
+            # 创建便捷的符号链接
+            ln -sf /tmp/glass/glass-manager.sh /usr/local/bin/glass 2>/dev/null || true
+            
+            echo '✅ 部署脚本和管理工具已上传到 /tmp/glass/'
+            echo 'ℹ️  可以使用以下命令管理应用:'
+            echo '   cd /tmp/glass && ./glass-manager.sh status'
+            echo '   或直接使用: glass status'
+            echo '   检查环境变量: ./check-env-vars.sh'
+          "
 
     - name: Execute deployment on VM
       run: |
@@ -214,7 +231,7 @@ jobs:
             export JWT_SECRET_KEY='${{ secrets.JWT_SECRET_KEY }}'
             
             # Run the deployment script
-            /tmp/vm-deploy.sh
+            /tmp/glass/vm-deploy.sh
           "
 
     - name: Health Check
@@ -253,7 +270,7 @@ jobs:
             --name ${{ env.VM_NAME }} \
             --command-id RunShellScript \
             --scripts "
-              cd /home/azureuser/smart-glasses-app
+              cd /tmp/glass
               echo '📊 服务状态:'
               sudo -u azureuser docker-compose ps
               echo '📜 服务日志:'

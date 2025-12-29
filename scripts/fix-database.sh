@@ -65,7 +65,7 @@ set -e
 echo "🔧 开始修复数据库..."
 
 # 进入应用目录
-cd /home/azureuser/smart-glasses-app
+cd /tmp/glass
 
 # 检查 PostgreSQL 容器是否运行
 if ! docker-compose ps postgres | grep -q "Up"; then

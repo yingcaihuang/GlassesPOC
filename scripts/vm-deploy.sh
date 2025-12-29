@@ -30,9 +30,8 @@ echo "👤 现在运行用户: $(whoami)"
 echo "📁 当前目录: $(pwd)"
 
 # 设置工作目录
-cd /home/azureuser
-mkdir -p smart-glasses-app
-cd smart-glasses-app
+mkdir -p /tmp/glass
+cd /tmp/glass
 echo "📍 应用目录: $(pwd)"
 
 # 检查 Docker 访问
@@ -83,6 +82,36 @@ echo "📋 使用的配置:"
 echo "   - CONTAINER_REGISTRY: $CONTAINER_REGISTRY"
 echo "   - IMAGE_NAME: $IMAGE_NAME"
 echo "   - IMAGE_TAG: $IMAGE_TAG"
+
+# 验证关键环境变量
+echo "🔍 验证环境变量:"
+if [ -z "$AZURE_OPENAI_ENDPOINT" ]; then
+    echo "❌ AZURE_OPENAI_ENDPOINT 未设置或为空"
+    echo "ℹ️  请检查 GitHub Secrets 中的 AZURE_OPENAI_ENDPOINT"
+else
+    echo "✅ AZURE_OPENAI_ENDPOINT: ${AZURE_OPENAI_ENDPOINT:0:30}..."
+fi
+
+if [ -z "$AZURE_OPENAI_API_KEY" ]; then
+    echo "❌ AZURE_OPENAI_API_KEY 未设置或为空"
+    echo "ℹ️  请检查 GitHub Secrets 中的 AZURE_OPENAI_API_KEY"
+else
+    echo "✅ AZURE_OPENAI_API_KEY: ${AZURE_OPENAI_API_KEY:0:10}..."
+fi
+
+if [ -z "$POSTGRES_PASSWORD" ]; then
+    echo "❌ POSTGRES_PASSWORD 未设置或为空"
+    echo "ℹ️  请检查 GitHub Secrets 中的 POSTGRES_PASSWORD"
+else
+    echo "✅ POSTGRES_PASSWORD: ***"
+fi
+
+if [ -z "$JWT_SECRET_KEY" ]; then
+    echo "❌ JWT_SECRET_KEY 未设置或为空"
+    echo "ℹ️  请检查 GitHub Secrets 中的 JWT_SECRET_KEY"
+else
+    echo "✅ JWT_SECRET_KEY: ***"
+fi
 
 # 首先安装 Azure CLI（如果还没有安装）
 if ! command -v az &> /dev/null; then
@@ -169,7 +198,7 @@ cat > docker-compose.yml << "COMPOSE_EOF"
 services:
   postgres:
     image: postgres:15-alpine
-    container_name: smart-glasses-postgres
+    container_name: glass-postgres
     environment:
       POSTGRES_USER: smartglasses
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-smartglasses123}
@@ -177,7 +206,7 @@ services:
     ports:
       - "5432:5432"
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - glass_postgres_data:/var/lib/postgresql/data
       - ./migrations:/docker-entrypoint-initdb.d
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U smartglasses"]
@@ -188,11 +217,11 @@ services:
 
   redis:
     image: redis:7-alpine
-    container_name: smart-glasses-redis
+    container_name: glass-redis
     ports:
       - "6379:6379"
     volumes:
-      - redis_data:/data
+      - glass_redis_data:/data
     command: redis-server --appendonly yes
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
@@ -203,7 +232,7 @@ services:
 
   app:
     image: ${CONTAINER_REGISTRY:-smartglassesacr}.azurecr.io/${IMAGE_NAME:-smart-glasses-app}-backend:${IMAGE_TAG:-latest}
-    container_name: smart-glasses-app
+    container_name: glass-app
     environment:
       SERVER_PORT: "8080"
       SERVER_ENV: "production"
@@ -232,7 +261,7 @@ services:
 
   frontend:
     image: ${CONTAINER_REGISTRY:-smartglassesacr}.azurecr.io/${IMAGE_NAME:-smart-glasses-app}-frontend:${IMAGE_TAG:-latest}
-    container_name: smart-glasses-frontend
+    container_name: glass-frontend
     ports:
       - "3000:80"
     depends_on:
@@ -240,11 +269,12 @@ services:
     restart: unless-stopped
 
 volumes:
-  postgres_data:
-  redis_data:
+  glass_postgres_data:
+  glass_redis_data:
 COMPOSE_EOF
 
 # 创建 .env 文件
+echo "📝 创建 .env 文件..."
 cat > .env << "ENV_EOF"
 AZURE_OPENAI_ENDPOINT=${AZURE_OPENAI_ENDPOINT}
 AZURE_OPENAI_API_KEY=${AZURE_OPENAI_API_KEY}
@@ -261,6 +291,10 @@ IMAGE_NAME=${IMAGE_NAME}
 IMAGE_TAG=${IMAGE_TAG}
 ENV_EOF
 
+echo "✅ .env 文件已创建"
+echo "🔍 验证 .env 文件内容（隐藏敏感信息）:"
+cat .env | sed 's/=.*/=***/' | head -10
+
 echo "📋 文件创建成功:"
 ls -la
 
@@ -270,7 +304,7 @@ docker-compose down || true
 
 # 清理旧的数据库数据（强制重新初始化）
 echo "🗑️ 清理旧的数据库数据..."
-docker volume rm smart-glasses-app_postgres_data 2>/dev/null || true
+docker volume rm glass_postgres_data 2>/dev/null || true
 
 # 拉取最新镜像
 echo "📥 拉取最新镜像..."
@@ -290,6 +324,7 @@ if ! docker-compose pull; then
         export IMAGE_TAG="$AVAILABLE_TAG"
         
         # 重新创建 .env 文件
+        echo "📝 重新创建 .env 文件..."
         cat > .env << "ENV_EOF"
 AZURE_OPENAI_ENDPOINT=${AZURE_OPENAI_ENDPOINT}
 AZURE_OPENAI_API_KEY=${AZURE_OPENAI_API_KEY}
@@ -306,12 +341,14 @@ IMAGE_NAME=${IMAGE_NAME}
 IMAGE_TAG=${IMAGE_TAG}
 ENV_EOF
         
+        echo "✅ .env 文件已重新创建"
+        
         # 重新创建 docker-compose.yml 使用新标签
         cat > docker-compose.yml << "COMPOSE_EOF"
 services:
   postgres:
     image: postgres:15-alpine
-    container_name: smart-glasses-postgres
+    container_name: glass-postgres
     environment:
       POSTGRES_USER: smartglasses
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-smartglasses123}
@@ -319,7 +356,7 @@ services:
     ports:
       - "5432:5432"
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - glass_postgres_data:/var/lib/postgresql/data
       - ./migrations:/docker-entrypoint-initdb.d
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U smartglasses"]
@@ -330,11 +367,11 @@ services:
 
   redis:
     image: redis:7-alpine
-    container_name: smart-glasses-redis
+    container_name: glass-redis
     ports:
       - "6379:6379"
     volumes:
-      - redis_data:/data
+      - glass_redis_data:/data
     command: redis-server --appendonly yes
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
@@ -345,7 +382,7 @@ services:
 
   app:
     image: ${CONTAINER_REGISTRY:-smartglassesacr}.azurecr.io/${IMAGE_NAME:-smart-glasses-app}-backend:${IMAGE_TAG}
-    container_name: smart-glasses-app
+    container_name: glass-app
     environment:
       SERVER_PORT: "8080"
       SERVER_ENV: "production"
@@ -374,7 +411,7 @@ services:
 
   frontend:
     image: ${CONTAINER_REGISTRY:-smartglassesacr}.azurecr.io/${IMAGE_NAME:-smart-glasses-app}-frontend:${IMAGE_TAG}
-    container_name: smart-glasses-frontend
+    container_name: glass-frontend
     ports:
       - "3000:80"
     depends_on:
@@ -382,8 +419,8 @@ services:
     restart: unless-stopped
 
 volumes:
-  postgres_data:
-  redis_data:
+  glass_postgres_data:
+  glass_redis_data:
 COMPOSE_EOF
         
         echo "🔄 使用新标签重新拉取镜像..."
