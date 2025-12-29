@@ -50,6 +50,30 @@ echo "✅ Docker 访问正常"
 # 登录 ACR 使用托管身份
 echo "🔐 使用托管身份登录 Azure Container Registry..."
 
+# 检查必要的环境变量
+if [ -z "$CONTAINER_REGISTRY" ]; then
+    echo "❌ CONTAINER_REGISTRY 环境变量未设置"
+    echo "ℹ️  使用默认值: smartglassesacr"
+    CONTAINER_REGISTRY="smartglassesacr"
+fi
+
+if [ -z "$IMAGE_NAME" ]; then
+    echo "❌ IMAGE_NAME 环境变量未设置"
+    echo "ℹ️  使用默认值: smart-glasses-app"
+    IMAGE_NAME="smart-glasses-app"
+fi
+
+if [ -z "$IMAGE_TAG" ]; then
+    echo "❌ IMAGE_TAG 环境变量未设置"
+    echo "ℹ️  使用默认值: latest"
+    IMAGE_TAG="latest"
+fi
+
+echo "📋 使用的配置:"
+echo "   - CONTAINER_REGISTRY: $CONTAINER_REGISTRY"
+echo "   - IMAGE_NAME: $IMAGE_NAME"
+echo "   - IMAGE_TAG: $IMAGE_TAG"
+
 # 首先安装 Azure CLI（如果还没有安装）
 if ! command -v az &> /dev/null; then
     echo "安装 Azure CLI..."
@@ -69,7 +93,7 @@ if az login --identity; then
         echo "❌ ACR 登录失败"
         echo "ℹ️  可能的原因："
         echo "   1. VM 托管身份没有 AcrPull 权限"
-        echo "   2. ACR 不存在或名称错误"
+        echo "   2. ACR 不存在或名称错误: $CONTAINER_REGISTRY"
         echo "ℹ️  请运行手动角色分配脚本: ./scripts/assign-acr-role-manual.sh"
         exit 1
     fi
@@ -168,7 +192,7 @@ services:
     restart: unless-stopped
 
   app:
-    image: ${CONTAINER_REGISTRY}.azurecr.io/${IMAGE_NAME}-backend:${IMAGE_TAG}
+    image: ${CONTAINER_REGISTRY:-smartglassesacr}.azurecr.io/${IMAGE_NAME:-smart-glasses-app}-backend:${IMAGE_TAG:-latest}
     container_name: smart-glasses-app
     environment:
       SERVER_PORT: "8080"
@@ -197,7 +221,7 @@ services:
     restart: unless-stopped
 
   frontend:
-    image: ${CONTAINER_REGISTRY}.azurecr.io/${IMAGE_NAME}-frontend:${IMAGE_TAG}
+    image: ${CONTAINER_REGISTRY:-smartglassesacr}.azurecr.io/${IMAGE_NAME:-smart-glasses-app}-frontend:${IMAGE_TAG:-latest}
     container_name: smart-glasses-frontend
     ports:
       - "3000:80"
