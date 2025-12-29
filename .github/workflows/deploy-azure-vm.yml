@@ -212,9 +212,9 @@ jobs:
         
         # Login to ACR
         echo "🔐 Logging into Azure Container Registry..."
-        echo "   - Registry: ${{ env.CONTAINER_REGISTRY }}.azurecr.io"
-        echo "   - Username: ${{ env.CONTAINER_REGISTRY }}"
-        echo "$ACR_PASSWORD" | docker login ${{ env.CONTAINER_REGISTRY }}.azurecr.io --username ${{ env.CONTAINER_REGISTRY }} --password-stdin
+        echo "   - Registry: \$CONTAINER_REGISTRY.azurecr.io"
+        echo "   - Username: \$CONTAINER_REGISTRY"
+        echo "\$ACR_PASSWORD" | docker login \$CONTAINER_REGISTRY.azurecr.io --username \$CONTAINER_REGISTRY --password-stdin
         echo "✅ ACR login successful"
         
         # Create migrations directory and copy SQL files
@@ -308,7 +308,7 @@ services:
     restart: unless-stopped
 
   app:
-    image: ${{ env.CONTAINER_REGISTRY }}.azurecr.io/${{ env.IMAGE_NAME }}-backend:${{ env.IMAGE_TAG }}
+    image: \$CONTAINER_REGISTRY.azurecr.io/\$IMAGE_NAME-backend:\$IMAGE_TAG
     container_name: smart-glasses-app
     environment:
       SERVER_PORT: "8080"
@@ -337,7 +337,7 @@ services:
     restart: unless-stopped
 
   frontend:
-    image: ${{ env.CONTAINER_REGISTRY }}.azurecr.io/${{ env.IMAGE_NAME }}-frontend:${{ env.IMAGE_TAG }}
+    image: \$CONTAINER_REGISTRY.azurecr.io/\$IMAGE_NAME-frontend:\$IMAGE_TAG
     container_name: smart-glasses-frontend
     ports:
       - "3000:80"
@@ -353,17 +353,17 @@ COMPOSE_EOF
         # Create .env file
         echo "📝 Creating .env file in: $(pwd)/.env"
         cat > .env << 'ENV_EOF'
-        AZURE_OPENAI_ENDPOINT=$AZURE_OPENAI_ENDPOINT
-        AZURE_OPENAI_API_KEY=$AZURE_OPENAI_API_KEY
-        AZURE_OPENAI_DEPLOYMENT_NAME=$AZURE_OPENAI_DEPLOYMENT_NAME
-        AZURE_OPENAI_API_VERSION=$AZURE_OPENAI_API_VERSION
-        AZURE_OPENAI_REALTIME_ENDPOINT=$AZURE_OPENAI_REALTIME_ENDPOINT
-        AZURE_OPENAI_REALTIME_API_KEY=$AZURE_OPENAI_REALTIME_API_KEY
-        AZURE_OPENAI_REALTIME_DEPLOYMENT_NAME=$AZURE_OPENAI_REALTIME_DEPLOYMENT_NAME
-        AZURE_OPENAI_REALTIME_API_VERSION=$AZURE_OPENAI_REALTIME_API_VERSION
-        POSTGRES_PASSWORD=$POSTGRES_PASSWORD
-        JWT_SECRET_KEY=$JWT_SECRET_KEY
-        ENV_EOF
+AZURE_OPENAI_ENDPOINT=\$AZURE_OPENAI_ENDPOINT
+AZURE_OPENAI_API_KEY=\$AZURE_OPENAI_API_KEY
+AZURE_OPENAI_DEPLOYMENT_NAME=\$AZURE_OPENAI_DEPLOYMENT_NAME
+AZURE_OPENAI_API_VERSION=\$AZURE_OPENAI_API_VERSION
+AZURE_OPENAI_REALTIME_ENDPOINT=\$AZURE_OPENAI_REALTIME_ENDPOINT
+AZURE_OPENAI_REALTIME_API_KEY=\$AZURE_OPENAI_REALTIME_API_KEY
+AZURE_OPENAI_REALTIME_DEPLOYMENT_NAME=\$AZURE_OPENAI_REALTIME_DEPLOYMENT_NAME
+AZURE_OPENAI_REALTIME_API_VERSION=\$AZURE_OPENAI_REALTIME_API_VERSION
+POSTGRES_PASSWORD=\$POSTGRES_PASSWORD
+JWT_SECRET_KEY=\$JWT_SECRET_KEY
+ENV_EOF
         
         echo "📋 Files created successfully:"
         echo "   - Working directory: $(pwd)"
@@ -475,6 +475,9 @@ COMPOSE_EOF
           --scripts @deploy-script.sh \
           --parameters \
             ACR_PASSWORD="$ACR_PASSWORD" \
+            CONTAINER_REGISTRY="${{ env.CONTAINER_REGISTRY }}" \
+            IMAGE_NAME="${{ env.IMAGE_NAME }}" \
+            IMAGE_TAG="${{ env.IMAGE_TAG }}" \
             AZURE_OPENAI_ENDPOINT="${{ secrets.AZURE_OPENAI_ENDPOINT }}" \
             AZURE_OPENAI_API_KEY="${{ secrets.AZURE_OPENAI_API_KEY }}" \
             AZURE_OPENAI_DEPLOYMENT_NAME="${{ secrets.AZURE_OPENAI_DEPLOYMENT_NAME }}" \
