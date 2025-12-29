@@ -1,0 +1,500 @@
+name: Deploy to Azure VM (Clean)
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+      - staging
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Deployment environment'
+        required: true
+        default: 'development'
+        type: choice
+        options:
+        - development
+        - staging
+        - production
+
+env:
+  AZURE_RESOURCE_GROUP: smart-glasses-rg
+  VM_NAME: smart-glasses-vm
+  LOCATION: eastus
+  CONTAINER_REGISTRY: smartglassesacr
+  IMAGE_NAME: smart-glasses-app
+  IMAGE_TAG: ${{ github.sha }}
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Azure Login with OIDC
+      uses: azure/login@v2
+      with:
+        client-id: ${{ secrets.AZURE_CLIENT_ID }}
+        tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+        subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+    - name: Create or Update Resource Group
+      run: |
+        az group create --name ${{ env.AZURE_RESOURCE_GROUP }} --location ${{ env.LOCATION }}
+
+    - name: Check and Configure Azure Container Registry
+      run: |
+        if az acr show --name ${{ env.CONTAINER_REGISTRY }} --resource-group ${{ env.AZURE_RESOURCE_GROUP }} &>/dev/null; then
+          echo "✅ Azure Container Registry '${{ env.CONTAINER_REGISTRY }}' already exists, using existing registry"
+        else
+          echo "Creating new Azure Container Registry '${{ env.CONTAINER_REGISTRY }}'..."
+          az acr create \
+            --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+            --name ${{ env.CONTAINER_REGISTRY }} \
+            --sku Basic \
+            --admin-enabled true
+          echo "✅ New ACR created successfully"
+        fi
+
+    - name: Build and Push Docker Images to ACR
+      run: |
+        # Login to ACR
+        az acr login --name ${{ env.CONTAINER_REGISTRY }}
+        
+        # Build and push backend image
+        docker build -t ${{ env.CONTAINER_REGISTRY }}.azurecr.io/${{ env.IMAGE_NAME }}-backend:${{ env.IMAGE_TAG }} .
+        docker push ${{ env.CONTAINER_REGISTRY }}.azurecr.io/${{ env.IMAGE_NAME }}-backend:${{ env.IMAGE_TAG }}
+        
+        # Build and push frontend image
+        docker build -t ${{ env.CONTAINER_REGISTRY }}.azurecr.io/${{ env.IMAGE_NAME }}-frontend:${{ env.IMAGE_TAG }} ./frontend
+        docker push ${{ env.CONTAINER_REGISTRY }}.azurecr.io/${{ env.IMAGE_NAME }}-frontend:${{ env.IMAGE_TAG }}
+
+    - name: Check and Configure Virtual Machine
+      run: |
+        # Check if VM exists
+        if az vm show --name ${{ env.VM_NAME }} --resource-group ${{ env.AZURE_RESOURCE_GROUP }} &>/dev/null; then
+          echo "✅ Virtual Machine '${{ env.VM_NAME }}' already exists, using existing VM"
+          
+          # Get VM status
+          VM_STATUS=$(az vm show --name ${{ env.VM_NAME }} --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --show-details --query "powerState" --output tsv)
+          echo "VM Status: $VM_STATUS"
+          
+          # Start VM if it's stopped
+          if [[ "$VM_STATUS" == "VM stopped" ]] || [[ "$VM_STATUS" == "VM deallocated" ]]; then
+            echo "Starting VM..."
+            az vm start --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --name ${{ env.VM_NAME }}
+            echo "Waiting for VM to start..."
+            sleep 30
+          fi
+          
+        else
+          echo "Creating new Virtual Machine '${{ env.VM_NAME }}'..."
+          
+          # Create VM
+          az vm create \
+            --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+            --name ${{ env.VM_NAME }} \
+            --image Ubuntu2204 \
+            --size Standard_B2s \
+            --admin-username azureuser \
+            --generate-ssh-keys \
+            --public-ip-sku Standard \
+            --nsg-rule SSH
+          
+          # Open required ports
+          echo "Configuring network security group..."
+          az vm open-port --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --name ${{ env.VM_NAME }} --port 80 --priority 1001
+          az vm open-port --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --name ${{ env.VM_NAME }} --port 443 --priority 1002
+          az vm open-port --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --name ${{ env.VM_NAME }} --port 3000 --priority 1003
+          az vm open-port --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --name ${{ env.VM_NAME }} --port 8080 --priority 1004
+          
+          # Install Docker using custom script extension
+          echo "Installing Docker on new VM..."
+          az vm extension set \
+            --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+            --vm-name ${{ env.VM_NAME }} \
+            --name CustomScript \
+            --publisher Microsoft.Azure.Extensions \
+            --settings '{
+              "commandToExecute": "apt-get update && apt-get install -y apt-transport-https ca-certificates curl software-properties-common && curl -fsSL https://download.docker.com/linux/ubuntu/gpg | apt-key add - && add-apt-repository \"deb [arch=amd64] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable\" && apt-get update && apt-get install -y docker-ce docker-ce-cli containerd.io && systemctl start docker && systemctl enable docker && usermod -aG docker azureuser && chmod 666 /var/run/docker.sock"
+            }'
+          
+          # Wait for Docker installation to complete
+          echo "Waiting for Docker installation to complete..."
+          sleep 60
+          
+          echo "✅ New VM created and configured successfully"
+        fi
+
+    - name: Get VM Public IP
+      id: vm-ip
+      run: |
+        VM_IP=$(az vm show --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --name ${{ env.VM_NAME }} --show-details --query publicIps --output tsv)
+        echo "VM_IP=$VM_IP" >> $GITHUB_OUTPUT
+        echo "VM Public IP: $VM_IP"
+
+    - name: Deploy to VM using clean script approach
+      run: |
+        # Get ACR credentials
+        ACR_PASSWORD=$(az acr credential show --name ${{ env.CONTAINER_REGISTRY }} --query "passwords[0].value" --output tsv)
+        
+        # Create deployment script content
+        cat > vm-deploy-script.sh << 'SCRIPT_EOF'
+#!/bin/bash
+set -e
+
+echo "🚀 开始 Azure VM 部署"
+echo "📍 脚本执行信息:"
+echo "   - 当前用户: $(whoami)"
+echo "   - 当前目录: $(pwd)"
+echo "   - 时间: $(date)"
+
+# 确保 Docker 服务运行
+echo "🐳 确保 Docker 服务运行..."
+sudo systemctl start docker
+sudo systemctl enable docker
+
+# 修复 Docker 权限
+echo "🔐 修复 Docker 权限..."
+sudo usermod -aG docker azureuser
+sudo chmod 666 /var/run/docker.sock
+
+# 切换到 azureuser 执行部署
+echo "🔄 切换到 azureuser 执行部署..."
+sudo -u azureuser bash << 'DEPLOY_EOF'
+set -e
+
+echo "👤 现在运行用户: $(whoami)"
+echo "📁 当前目录: $(pwd)"
+
+# 设置工作目录
+cd /home/azureuser
+mkdir -p smart-glasses-app
+cd smart-glasses-app
+echo "📍 应用目录: $(pwd)"
+
+# 检查 Docker 访问
+echo "🐳 检查 Docker 访问..."
+if ! docker info >/dev/null 2>&1; then
+    echo "❌ Docker 无法访问，等待权限生效..."
+    sleep 10
+    if ! docker info >/dev/null 2>&1; then
+        echo "❌ Docker 仍然无法访问"
+        exit 1
+    fi
+fi
+echo "✅ Docker 访问正常"
+
+# 登录 ACR
+echo "🔐 登录 Azure Container Registry..."
+echo "$ACR_PASSWORD" | docker login $CONTAINER_REGISTRY.azurecr.io --username $CONTAINER_REGISTRY --password-stdin
+echo "✅ ACR 登录成功"
+
+# 创建迁移目录和文件
+mkdir -p migrations
+
+cat > migrations/001_init.sql << 'SQL_EOF'
+-- Create users table
+CREATE TABLE IF NOT EXISTS users (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    username VARCHAR(50) UNIQUE NOT NULL,
+    email VARCHAR(100) UNIQUE NOT NULL,
+    password_hash VARCHAR(255) NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Create translation_history table
+CREATE TABLE IF NOT EXISTS translation_history (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    source_text TEXT NOT NULL,
+    translated_text TEXT NOT NULL,
+    source_language VARCHAR(10) NOT NULL,
+    target_language VARCHAR(10) NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Create indexes
+CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
+CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);
+CREATE INDEX IF NOT EXISTS idx_translation_history_user_id ON translation_history(user_id);
+CREATE INDEX IF NOT EXISTS idx_translation_history_created_at ON translation_history(created_at);
+SQL_EOF
+
+cat > migrations/002_add_statistics.sql << 'SQL2_EOF'
+-- Create token usage table for OpenAI token tracking
+CREATE TABLE IF NOT EXISTS token_usage (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    input_tokens INTEGER NOT NULL DEFAULT 0,
+    output_tokens INTEGER NOT NULL DEFAULT 0,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Create index for faster queries
+CREATE INDEX IF NOT EXISTS idx_token_usage_user_id ON token_usage(user_id);
+CREATE INDEX IF NOT EXISTS idx_token_usage_created_at ON token_usage(created_at);
+SQL2_EOF
+
+# 创建 docker-compose.yml
+cat > docker-compose.yml << 'COMPOSE_EOF'
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: smart-glasses-postgres
+    environment:
+      POSTGRES_USER: smartglasses
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-smartglasses123}
+      POSTGRES_DB: smart_glasses
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./migrations:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U smartglasses"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: smart-glasses-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  app:
+    image: ${CONTAINER_REGISTRY}.azurecr.io/${IMAGE_NAME}-backend:${IMAGE_TAG}
+    container_name: smart-glasses-app
+    environment:
+      SERVER_PORT: "8080"
+      SERVER_ENV: "production"
+      POSTGRES_DSN: "postgres://smartglasses:${POSTGRES_PASSWORD:-smartglasses123}@postgres:5432/smart_glasses?sslmode=disable"
+      REDIS_ADDR: "redis:6379"
+      REDIS_PASSWORD: ""
+      JWT_SECRET_KEY: "${JWT_SECRET_KEY:-change-this-in-production}"
+      JWT_ACCESS_TOKEN_EXPIRY: "1h"
+      JWT_REFRESH_TOKEN_EXPIRY: "168h"
+      AZURE_OPENAI_ENDPOINT: "${AZURE_OPENAI_ENDPOINT}"
+      AZURE_OPENAI_API_KEY: "${AZURE_OPENAI_API_KEY}"
+      AZURE_OPENAI_DEPLOYMENT_NAME: "${AZURE_OPENAI_DEPLOYMENT_NAME:-gpt-4o}"
+      AZURE_OPENAI_API_VERSION: "${AZURE_OPENAI_API_VERSION:-2024-08-01-preview}"
+      AZURE_OPENAI_REALTIME_ENDPOINT: "${AZURE_OPENAI_REALTIME_ENDPOINT}"
+      AZURE_OPENAI_REALTIME_API_KEY: "${AZURE_OPENAI_REALTIME_API_KEY}"
+      AZURE_OPENAI_REALTIME_DEPLOYMENT_NAME: "${AZURE_OPENAI_REALTIME_DEPLOYMENT_NAME:-gpt-realtime}"
+      AZURE_OPENAI_REALTIME_API_VERSION: "${AZURE_OPENAI_REALTIME_API_VERSION:-2024-10-01-preview}"
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  frontend:
+    image: ${CONTAINER_REGISTRY}.azurecr.io/${IMAGE_NAME}-frontend:${IMAGE_TAG}
+    container_name: smart-glasses-frontend
+    ports:
+      - "3000:80"
+    depends_on:
+      - app
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  redis_data:
+COMPOSE_EOF
+
+# 创建 .env 文件
+cat > .env << 'ENV_EOF'
+AZURE_OPENAI_ENDPOINT=${AZURE_OPENAI_ENDPOINT}
+AZURE_OPENAI_API_KEY=${AZURE_OPENAI_API_KEY}
+AZURE_OPENAI_DEPLOYMENT_NAME=${AZURE_OPENAI_DEPLOYMENT_NAME}
+AZURE_OPENAI_API_VERSION=${AZURE_OPENAI_API_VERSION}
+AZURE_OPENAI_REALTIME_ENDPOINT=${AZURE_OPENAI_REALTIME_ENDPOINT}
+AZURE_OPENAI_REALTIME_API_KEY=${AZURE_OPENAI_REALTIME_API_KEY}
+AZURE_OPENAI_REALTIME_DEPLOYMENT_NAME=${AZURE_OPENAI_REALTIME_DEPLOYMENT_NAME}
+AZURE_OPENAI_REALTIME_API_VERSION=${AZURE_OPENAI_REALTIME_API_VERSION}
+POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+JWT_SECRET_KEY=${JWT_SECRET_KEY}
+CONTAINER_REGISTRY=${CONTAINER_REGISTRY}
+IMAGE_NAME=${IMAGE_NAME}
+IMAGE_TAG=${IMAGE_TAG}
+ENV_EOF
+
+echo "📋 文件创建成功:"
+ls -la
+
+# 停止现有服务
+echo "🛑 停止现有服务..."
+docker-compose down || true
+
+# 拉取最新镜像
+echo "📥 拉取最新镜像..."
+docker-compose pull
+
+# 启动服务
+echo "🚀 启动服务..."
+docker-compose up -d
+
+# 等待服务启动
+echo "⏳ 等待服务启动..."
+sleep 20
+
+# 检查服务状态
+echo "📊 检查服务状态..."
+docker-compose ps
+
+# 显示日志
+echo "📜 显示服务日志:"
+docker-compose logs --tail=30
+
+echo "✅ 部署完成!"
+
+DEPLOY_EOF
+
+echo "✅ VM 部署脚本完成!"
+SCRIPT_EOF
+        
+        chmod +x vm-deploy-script.sh
+        
+        # Execute deployment script on VM
+        az vm run-command invoke \
+          --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+          --name ${{ env.VM_NAME }} \
+          --command-id RunShellScript \
+          --scripts @vm-deploy-script.sh \
+          --parameters \
+            ACR_PASSWORD="$ACR_PASSWORD" \
+            CONTAINER_REGISTRY="${{ env.CONTAINER_REGISTRY }}" \
+            IMAGE_NAME="${{ env.IMAGE_NAME }}" \
+            IMAGE_TAG="${{ env.IMAGE_TAG }}" \
+            AZURE_OPENAI_ENDPOINT="${{ secrets.AZURE_OPENAI_ENDPOINT }}" \
+            AZURE_OPENAI_API_KEY="${{ secrets.AZURE_OPENAI_API_KEY }}" \
+            AZURE_OPENAI_DEPLOYMENT_NAME="${{ secrets.AZURE_OPENAI_DEPLOYMENT_NAME }}" \
+            AZURE_OPENAI_API_VERSION="${{ secrets.AZURE_OPENAI_API_VERSION }}" \
+            AZURE_OPENAI_REALTIME_ENDPOINT="${{ secrets.AZURE_OPENAI_REALTIME_ENDPOINT }}" \
+            AZURE_OPENAI_REALTIME_API_KEY="${{ secrets.AZURE_OPENAI_REALTIME_API_KEY }}" \
+            AZURE_OPENAI_REALTIME_DEPLOYMENT_NAME="${{ secrets.AZURE_OPENAI_REALTIME_DEPLOYMENT_NAME }}" \
+            AZURE_OPENAI_REALTIME_API_VERSION="${{ secrets.AZURE_OPENAI_REALTIME_API_VERSION }}" \
+            POSTGRES_PASSWORD="${{ secrets.POSTGRES_PASSWORD }}" \
+            JWT_SECRET_KEY="${{ secrets.JWT_SECRET_KEY }}"
+
+    - name: Health Check
+      run: |
+        VM_IP="${{ steps.vm-ip.outputs.VM_IP }}"
+        
+        echo "🏥 开始健康检查..."
+        echo "🌐 VM IP: $VM_IP"
+        
+        # Wait for services to be ready
+        echo "⏳ 等待服务准备就绪..."
+        sleep 90
+        
+        # Check backend health with retries
+        echo "🔍 检查后端服务健康状态..."
+        BACKEND_HEALTHY=false
+        for i in {1..15}; do
+          echo "尝试 $i/15: 检查后端健康状态..."
+          if curl -f -s --connect-timeout 10 --max-time 30 "http://$VM_IP:8080/health"; then
+            echo "✅ 后端服务健康检查通过"
+            BACKEND_HEALTHY=true
+            break
+          else
+            echo "⏳ 等待后端服务... (尝试 $i/15)"
+            sleep 15
+          fi
+        done
+        
+        if [ "$BACKEND_HEALTHY" = false ]; then
+          echo "❌ 后端服务健康检查失败"
+          echo "🔍 尝试获取服务状态..."
+          
+          # Try to get service status from VM
+          az vm run-command invoke \
+            --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+            --name ${{ env.VM_NAME }} \
+            --command-id RunShellScript \
+            --scripts "
+              cd /home/azureuser/smart-glasses-app
+              echo '📊 服务状态:'
+              sudo -u azureuser docker-compose ps
+              echo '📜 服务日志:'
+              sudo -u azureuser docker-compose logs --tail=30
+            " || echo "无法获取服务状态"
+          
+          exit 1
+        fi
+        
+        # Check frontend with retries
+        echo "🔍 检查前端服务..."
+        FRONTEND_HEALTHY=false
+        for i in {1..10}; do
+          echo "尝试 $i/10: 检查前端服务..."
+          if curl -f -s --connect-timeout 10 --max-time 30 "http://$VM_IP:3000" >/dev/null; then
+            echo "✅ 前端服务可访问"
+            FRONTEND_HEALTHY=true
+            break
+          else
+            echo "⏳ 等待前端服务... (尝试 $i/10)"
+            sleep 10
+          fi
+        done
+        
+        if [ "$FRONTEND_HEALTHY" = false ]; then
+          echo "❌ 前端服务检查失败"
+          exit 1
+        fi
+        
+        # Test API endpoints
+        echo "🧪 测试 API 端点..."
+        
+        # Test health endpoint with detailed response
+        echo "🔍 测试健康检查端点..."
+        HEALTH_RESPONSE=$(curl -s "http://$VM_IP:8080/health" || echo "请求失败")
+        echo "健康检查响应: $HEALTH_RESPONSE"
+        
+        # Test registration endpoint (should work if database is properly set up)
+        echo "🔍 测试用户注册端点..."
+        REGISTER_TEST=$(curl -s -w "%{http_code}" -X POST "http://$VM_IP:8080/api/auth/register" \
+          -H "Content-Type: application/json" \
+          -d '{
+            "username": "testuser_'$(date +%s)'",
+            "email": "test'$(date +%s)'@example.com",
+            "password": "testpassword123"
+          }' 2>/dev/null || echo "000")
+        
+        echo "注册端点测试响应: $REGISTER_TEST"
+        
+        if [[ "$REGISTER_TEST" == *"200"* ]] || [[ "$REGISTER_TEST" == *"201"* ]]; then
+          echo "✅ 用户注册端点正常 - 数据库连接正常"
+        elif [[ "$REGISTER_TEST" == *"400"* ]] || [[ "$REGISTER_TEST" == *"409"* ]]; then
+          echo "✅ 用户注册端点响应正常 (可能是验证错误，但端点可访问)"
+        else
+          echo "⚠️  用户注册端点可能有问题，但继续部署"
+        fi
+        
+        echo ""
+        echo "🎉 健康检查完成！"
+        echo "🌐 前端应用: http://$VM_IP:3000"
+        echo "🔧 后端 API: http://$VM_IP:8080"
+        echo "💚 健康检查: http://$VM_IP:8080/health"
