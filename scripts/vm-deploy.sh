@@ -270,7 +270,126 @@ docker-compose down || true
 
 # 拉取最新镜像
 echo "📥 拉取最新镜像..."
-docker-compose pull
+# 先尝试拉取，如果失败则检查可用的镜像标签
+if ! docker-compose pull; then
+    echo "⚠️  镜像拉取失败，尝试查找可用的镜像标签..."
+    
+    # 尝试获取最新的镜像标签
+    echo "🔍 查找最新的镜像标签..."
+    AVAILABLE_TAG=$(az acr repository show-tags --name $CONTAINER_REGISTRY --repository ${IMAGE_NAME}-backend --orderby time_desc --output tsv | head -1 2>/dev/null || echo "")
+    
+    if [ -n "$AVAILABLE_TAG" ]; then
+        echo "✅ 找到可用标签: $AVAILABLE_TAG"
+        echo "🔄 更新 IMAGE_TAG 并重新创建配置文件..."
+        
+        # 更新环境变量
+        export IMAGE_TAG="$AVAILABLE_TAG"
+        
+        # 重新创建 .env 文件
+        cat > .env << "ENV_EOF"
+AZURE_OPENAI_ENDPOINT=${AZURE_OPENAI_ENDPOINT}
+AZURE_OPENAI_API_KEY=${AZURE_OPENAI_API_KEY}
+AZURE_OPENAI_DEPLOYMENT_NAME=${AZURE_OPENAI_DEPLOYMENT_NAME}
+AZURE_OPENAI_API_VERSION=${AZURE_OPENAI_API_VERSION}
+AZURE_OPENAI_REALTIME_ENDPOINT=${AZURE_OPENAI_REALTIME_ENDPOINT}
+AZURE_OPENAI_REALTIME_API_KEY=${AZURE_OPENAI_REALTIME_API_KEY}
+AZURE_OPENAI_REALTIME_DEPLOYMENT_NAME=${AZURE_OPENAI_REALTIME_DEPLOYMENT_NAME}
+AZURE_OPENAI_REALTIME_API_VERSION=${AZURE_OPENAI_REALTIME_API_VERSION}
+POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+JWT_SECRET_KEY=${JWT_SECRET_KEY}
+CONTAINER_REGISTRY=${CONTAINER_REGISTRY}
+IMAGE_NAME=${IMAGE_NAME}
+IMAGE_TAG=${IMAGE_TAG}
+ENV_EOF
+        
+        # 重新创建 docker-compose.yml 使用新标签
+        cat > docker-compose.yml << "COMPOSE_EOF"
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: smart-glasses-postgres
+    environment:
+      POSTGRES_USER: smartglasses
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-smartglasses123}
+      POSTGRES_DB: smart_glasses
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./migrations:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U smartglasses"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: smart-glasses-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  app:
+    image: ${CONTAINER_REGISTRY:-smartglassesacr}.azurecr.io/${IMAGE_NAME:-smart-glasses-app}-backend:${IMAGE_TAG}
+    container_name: smart-glasses-app
+    environment:
+      SERVER_PORT: "8080"
+      SERVER_ENV: "production"
+      POSTGRES_DSN: "postgres://smartglasses:${POSTGRES_PASSWORD:-smartglasses123}@postgres:5432/smart_glasses?sslmode=disable"
+      REDIS_ADDR: "redis:6379"
+      REDIS_PASSWORD: ""
+      JWT_SECRET_KEY: "${JWT_SECRET_KEY:-change-this-in-production}"
+      JWT_ACCESS_TOKEN_EXPIRY: "1h"
+      JWT_REFRESH_TOKEN_EXPIRY: "168h"
+      AZURE_OPENAI_ENDPOINT: "${AZURE_OPENAI_ENDPOINT}"
+      AZURE_OPENAI_API_KEY: "${AZURE_OPENAI_API_KEY}"
+      AZURE_OPENAI_DEPLOYMENT_NAME: "${AZURE_OPENAI_DEPLOYMENT_NAME:-gpt-4o}"
+      AZURE_OPENAI_API_VERSION: "${AZURE_OPENAI_API_VERSION:-2024-08-01-preview}"
+      AZURE_OPENAI_REALTIME_ENDPOINT: "${AZURE_OPENAI_REALTIME_ENDPOINT}"
+      AZURE_OPENAI_REALTIME_API_KEY: "${AZURE_OPENAI_REALTIME_API_KEY}"
+      AZURE_OPENAI_REALTIME_DEPLOYMENT_NAME: "${AZURE_OPENAI_REALTIME_DEPLOYMENT_NAME:-gpt-realtime}"
+      AZURE_OPENAI_REALTIME_API_VERSION: "${AZURE_OPENAI_REALTIME_API_VERSION:-2024-10-01-preview}"
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  frontend:
+    image: ${CONTAINER_REGISTRY:-smartglassesacr}.azurecr.io/${IMAGE_NAME:-smart-glasses-app}-frontend:${IMAGE_TAG}
+    container_name: smart-glasses-frontend
+    ports:
+      - "3000:80"
+    depends_on:
+      - app
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  redis_data:
+COMPOSE_EOF
+        
+        echo "🔄 使用新标签重新拉取镜像..."
+        docker-compose pull
+    else
+        echo "❌ 无法找到可用的镜像标签"
+        echo "ℹ️  请检查 ACR 中是否有镜像"
+        exit 1
+    fi
+fi
 
 # 启动服务
 echo "🚀 启动服务..."
