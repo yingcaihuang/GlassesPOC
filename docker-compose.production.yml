@@ -87,6 +87,8 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile
+      args:
+        VITE_API_URL: "http://${SERVER_HOST:-localhost}:8080/api/v1"
     container_name: smart-glasses-frontend
     ports:
       - "3000:80"

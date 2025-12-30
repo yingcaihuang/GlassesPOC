@@ -50,9 +50,9 @@
                 
                 // Try different WebSocket URLs
                 const wsUrls = [
-                    `ws://localhost:3000/api/v1/realtime/chat?token=${token}`,
+                    `ws://${window.location.host}/api/v1/realtime/chat?token=${token}`,
                     `ws://localhost:8080/api/v1/realtime/chat?token=${token}`,
-                    `ws://${window.location.host}/api/v1/realtime/chat?token=${token}`
+                    `ws://localhost:3000/api/v1/realtime/chat?token=${token}`
                 ];
 
                 for (let i = 0; i < wsUrls.length; i++) {

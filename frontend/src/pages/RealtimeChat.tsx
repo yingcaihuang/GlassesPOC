@@ -52,7 +52,13 @@ export default function RealtimeChat() {
       websocketRef.current.close()
     }
 
-    const wsUrl = `ws://localhost:3000/api/v1/realtime/chat?token=${token}`
+    // Use environment variable for API URL, fallback to current host for production
+    const apiUrl = import.meta.env.VITE_API_URL || `/api/v1`
+    const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+    const wsHost = apiUrl.startsWith('http') 
+      ? apiUrl.replace(/^https?:\/\//, '').replace(/\/.*$/, '')
+      : window.location.host
+    const wsUrl = `${wsProtocol}//${wsHost}/api/v1/realtime/chat?token=${token}`
     const ws = new WebSocket(wsUrl)
     websocketRef.current = ws
 
