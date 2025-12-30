@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import { useAuth } from '../contexts/AuthContext'
 import { Mic, MicOff, Wifi, WifiOff, AlertCircle, Volume2, Activity } from 'lucide-react'
 import { RealtimeMessage, WebSocketMessage, AudioConfig } from '../types'
-import { errorHandler, ErrorType, handleMicrophonePermission, handleAudioPlayback, cleanupAudioResources } from '../utils/errorHandler'
+import { errorHandler, ErrorType, handleAudioPlayback, cleanupAudioResources } from '../utils/errorHandler'
 
 const AUDIO_CONFIG: AudioConfig = {
   sampleRate: 24000,  // GPT Realtime API要求24kHz
@@ -59,6 +59,9 @@ export default function RealtimeChat() {
       ? apiUrl.replace(/^https?:\/\//, '').replace(/\/.*$/, '')
       : window.location.host
     const wsUrl = `${wsProtocol}//${wsHost}/api/v1/realtime/chat?token=${token}`
+    
+    console.log('Connecting to WebSocket:', wsUrl)
+    
     const ws = new WebSocket(wsUrl)
     websocketRef.current = ws
 
@@ -66,7 +69,7 @@ export default function RealtimeChat() {
     const connectionTimeout = setTimeout(() => {
       if (ws.readyState === WebSocket.CONNECTING) {
         ws.close()
-        setError('连接超时，请检查网络连接')
+        setError('连接超时，请检查网络连接和服务器状态')
       }
     }, 10000)
 
@@ -76,7 +79,7 @@ export default function RealtimeChat() {
       setError('')
       setReconnectAttempts(0)
       setConnectionQuality('good')
-      console.log('WebSocket connected')
+      console.log('WebSocket connected successfully')
       
       // Send initial configuration
       ws.send(JSON.stringify({
@@ -107,14 +110,20 @@ export default function RealtimeChat() {
       setIsConnected(false)
       console.log('WebSocket disconnected:', event.code, event.reason)
       
-      // Handle different close codes
+      // Handle different close codes with more specific messages
       if (event.code === 1006) {
-        setError('网络连接出现问题，正在尝试重新连接...')
+        setError('网络连接异常中断。请检查网络连接和服务器状态。')
       } else if (event.code === 1011) {
-        setError('服务器内部错误，请稍后重试')
+        setError('服务器内部错误，请稍后重试或联系管理员')
       } else if (event.code === 1008) {
         setError('认证失败，请重新登录')
         return // Don't attempt reconnection for auth failures
+      } else if (event.code === 1002) {
+        setError('WebSocket 协议错误，请刷新页面重试')
+      } else if (event.code === 1003) {
+        setError('服务器拒绝连接，请检查服务器配置')
+      } else if (event.code !== 1000) {
+        setError(`连接已断开 (错误代码: ${event.code})。正在尝试重新连接...`)
       }
       
       // Attempt reconnection if not a clean close
@@ -126,15 +135,23 @@ export default function RealtimeChat() {
           console.log(`Attempting reconnection (${reconnectAttempts + 1}/5)`)
           connectWebSocket()
         }, delay)
+      } else if (reconnectAttempts >= 5) {
+        setError('多次重连失败，请刷新页面或检查网络连接')
       }
     }
 
     ws.onerror = (err) => {
       clearTimeout(connectionTimeout)
-      const errorInfo = errorHandler.handleWebSocketError(err, wsUrl)
-      setError(errorInfo.userMessage)
-      setConnectionQuality('poor')
       console.error('WebSocket error:', err)
+      
+      // More specific error messages based on connection state
+      if (ws.readyState === WebSocket.CONNECTING) {
+        setError('无法连接到服务器。请检查：1) 网络连接 2) 服务器是否运行 3) 防火墙设置')
+      } else {
+        setError('WebSocket 连接出现错误，正在尝试重新连接...')
+      }
+      
+      setConnectionQuality('poor')
     }
   }, [token, reconnectAttempts])
 
@@ -264,11 +281,63 @@ export default function RealtimeChat() {
     }
   }, [])
 
-  // Enhanced recording with better WebRTC integration
+// Enhanced recording with better WebRTC integration
   const startListening = useCallback(async () => {
     try {
-      // Use error handler for microphone permission
-      const stream = await handleMicrophonePermission()
+      // Check if we're in a secure context (HTTPS or localhost)
+      if (!window.isSecureContext && window.location.protocol !== 'https:' && !window.location.hostname.includes('localhost')) {
+        setError('麦克风功能需要 HTTPS 连接。请使用 HTTPS 访问此应用。')
+        return
+      }
+
+      // Check if getUserMedia is available
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        setError('您的浏览器不支持麦克风功能。请使用现代浏览器（Chrome、Firefox、Safari 等）。')
+        return
+      }
+
+      // Use error handler for microphone permission with enhanced error handling
+      let stream
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          audio: {
+            sampleRate: AUDIO_CONFIG.sampleRate,
+            channelCount: AUDIO_CONFIG.channelCount,
+            echoCancellation: AUDIO_CONFIG.echoCancellation,
+            noiseSuppression: AUDIO_CONFIG.noiseSuppression,
+            autoGainControl: AUDIO_CONFIG.autoGainControl
+          }
+        })
+      } catch (micError: any) {
+        console.error('Microphone access error:', micError)
+        
+        if (micError.name === 'NotAllowedError') {
+          setError('麦克风权限被拒绝。请在浏览器设置中允许此网站访问麦克风，然后刷新页面重试。')
+        } else if (micError.name === 'NotFoundError') {
+          setError('未找到麦克风设备。请确保您的设备已连接麦克风。')
+        } else if (micError.name === 'NotSupportedError') {
+          setError('您的浏览器不支持麦克风功能。请使用现代浏览器。')
+        } else if (micError.name === 'NotReadableError') {
+          setError('麦克风设备被其他应用占用。请关闭其他使用麦克风的应用后重试。')
+        } else if (micError.name === 'OverconstrainedError') {
+          setError('麦克风设备不支持所需的音频格式。正在尝试使用默认设置...')
+          
+          // Fallback to basic audio constraints
+          try {
+            stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+          } catch (fallbackError) {
+            setError('无法访问麦克风设备。请检查设备连接和浏览器权限。')
+            return
+          }
+        } else {
+          setError(`麦克风访问失败: ${micError.message || '未知错误'}。请检查浏览器权限和设备连接。`)
+        }
+        
+        if (!stream) {
+          return
+        }
+      }
+
       audioStreamRef.current = stream
 
       // Set up enhanced audio context with better processing
@@ -473,15 +542,24 @@ export default function RealtimeChat() {
       setError('') // Clear any previous errors
       
       addMessage('user', '开始监听...')
-    } catch (err) {
+    } catch (err: any) {
       console.error('Failed to start listening:', err)
       
-      // Handle specific microphone permission errors
+      // Enhanced error handling for different scenarios
       if (err instanceof DOMException) {
-        const errorInfo = errorHandler.handleMicrophonePermissionError(err)
-        setError(errorInfo.userMessage)
+        if (err.name === 'NotAllowedError') {
+          setError('麦克风权限被拒绝。请在浏览器地址栏点击锁图标，允许麦克风访问，然后刷新页面重试。')
+        } else if (err.name === 'NotFoundError') {
+          setError('未找到麦克风设备。请确保您的设备已连接麦克风并重试。')
+        } else if (err.name === 'NotSupportedError') {
+          setError('您的浏览器不支持麦克风功能。请使用 Chrome、Firefox 或 Safari 等现代浏览器。')
+        } else {
+          setError(`麦克风访问失败: ${err.message}`)
+        }
+      } else if (err.message && err.message.includes('secure')) {
+        setError('麦克风功能需要安全连接 (HTTPS)。请联系管理员配置 HTTPS 或在本地环境测试。')
       } else {
-        setError('无法开始监听，请检查麦克风权限和设备连接')
+        setError('无法开始监听，请检查麦克风权限和设备连接。如果问题持续，请尝试刷新页面或使用其他浏览器。')
       }
     }
   }, [])
@@ -702,6 +780,21 @@ export default function RealtimeChat() {
 
   return (
     <div className="max-w-4xl mx-auto h-full flex flex-col">
+      {/* HTTPS Warning for Production */}
+      {!window.isSecureContext && window.location.protocol !== 'https:' && !window.location.hostname.includes('localhost') && (
+        <div className="mb-4 p-4 bg-yellow-50 border border-yellow-200 rounded-lg">
+          <div className="flex items-center gap-3">
+            <AlertCircle className="w-5 h-5 text-yellow-600 flex-shrink-0" />
+            <div>
+              <h3 className="text-sm font-medium text-yellow-800">需要安全连接</h3>
+              <p className="text-sm text-yellow-700 mt-1">
+                麦克风功能需要 HTTPS 连接。请联系管理员配置 SSL 证书，或在本地环境测试。
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Enhanced Header with Connection Quality */}
       <div className="flex justify-between items-center mb-6 pb-4 border-b border-gray-200">
         <h1 className="text-2xl font-bold text-gray-900">GPT 实时语音对话</h1>
