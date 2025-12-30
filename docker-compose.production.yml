@@ -41,9 +41,7 @@ services:
 
   # Backend Application
   app:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    image: ${CONTAINER_REGISTRY:-smartglassesacr}.azurecr.io/${IMAGE_NAME:-smart-glasses-app}-backend:${IMAGE_TAG:-latest}
     container_name: smart-glasses-app
     environment:
       # Server
@@ -84,11 +82,7 @@ services:
 
   # Frontend Application
   frontend:
-    build:
-      context: ./frontend
-      dockerfile: Dockerfile
-      args:
-        VITE_API_URL: "http://${SERVER_HOST:-localhost}:8080/api/v1"
+    image: ${CONTAINER_REGISTRY:-smartglassesacr}.azurecr.io/${IMAGE_NAME:-smart-glasses-app}-frontend:${IMAGE_TAG:-latest}
     container_name: smart-glasses-frontend
     ports:
       - "3000:80"
